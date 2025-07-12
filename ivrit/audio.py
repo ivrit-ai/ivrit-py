@@ -557,44 +557,4 @@ def load_model(
         raise ValueError(f"Unsupported engine: {engine}. Supported engines: 'faster-whisper', 'stable-whisper', 'runpod', 'stable-ts'")
 
 
-def transcribe(
-    *,
-    path: Optional[str] = None,
-    url: Optional[str] = None,
-    language: Optional[str] = None,
-    engine: str = "faster-whisper",
-    model: str = "base",
-    stream: bool = False,
-    verbose: bool = False,
-    **kwargs
-) -> Union[dict, Generator]:
-    """
-    Convenience function for one-shot transcription.
-    
-    Args:
-        path: Path to the audio file to transcribe (mutually exclusive with url)
-        url: URL to download and transcribe (mutually exclusive with path)
-        language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
-        engine: Transcription engine to use ('faster-whisper', 'stable-whisper', or 'runpod')
-        model: Model name for the selected engine
-        stream: Whether to return results as a generator (True) or full result (False)
-        verbose: Whether to enable verbose output
-        **kwargs: Additional arguments for specific engines
-        
-    Returns:
-        If stream=True: Generator yielding transcription segments
-        If stream=False: Complete transcription result as dictionary
-        
-    Raises:
-        ValueError: If both path and url are provided, or neither is provided
-        FileNotFoundError: If the specified path doesn't exist
-        Exception: For other transcription errors
-    """
-    transcription_model = load_model(engine=engine, model=model, **kwargs)
-    return transcription_model.transcribe(
-        path=path,
-        url=url,
-        language=language,
-        stream=stream,
-        verbose=verbose
-    )
+

@@ -17,18 +17,14 @@ The `ivrit` package provides audio transcription functionality using multiple en
 #### Basic Usage
 
 ```python
-from ivrit import transcribe, load_model, FasterWhisperModel
+import ivrit
 
 # Transcribe a local audio file
-model = load_model(engine="faster-whisper", model="base")
-result = transcribe(transcription_model=model, path="audio.mp3")
-
-# Or use the model directly
-model = FasterWhisperModel(model="base")
+model = ivrit.load_model(engine="faster-whisper", model="ivrit-ai/whisper-large-v3-turbo-ct2")
 result = model.transcribe(path="audio.mp3")
 
 # With custom device
-model = load_model(engine="faster-whisper", model="base", device="cpu")
+model = ivrit.load_model(engine="faster-whisper", model="ivrit-ai/whisper-large-v3-turbo-ct2", device="cpu")
 result = model.transcribe(path="audio.mp3")
 
 print(result["text"])
@@ -38,11 +34,7 @@ print(result["text"])
 
 ```python
 # Transcribe audio from a URL
-model = load_model(engine="faster-whisper", model="base")
-result = transcribe(transcription_model=model, url="https://example.com/audio.mp3")
-
-# Or use the model directly
-model = FasterWhisperModel(model="base")
+model = ivrit.load_model(engine="faster-whisper", model="ivrit-ai/whisper-large-v3-turbo-ct2")
 result = model.transcribe(url="https://example.com/audio.mp3")
 
 print(result["text"])
@@ -52,17 +44,12 @@ print(result["text"])
 
 ```python
 # Get results as a stream (generator)
-model = load_model(engine="faster-whisper", model="base")
-for segment in transcribe(
-    transcription_model=model,
-    path="audio.mp3",
-    stream=True,
-    verbose=True
-):
+model = ivrit.load_model(engine="faster-whisper", model="base")
+for segment in model.transcribe(path="audio.mp3", stream=True, verbose=True):
     print(f"{segment.start:.2f}s - {segment.end:.2f}s: {segment.text}")
 
 # Or use the model directly
-model = FasterWhisperModel(model="base")
+model = ivrit.FasterWhisperModel(model="base")
 for segment in model.transcribe(path="audio.mp3", stream=True):
     print(f"{segment.start:.2f}s - {segment.end:.2f}s: {segment.text}")
 
@@ -95,60 +82,7 @@ Load a transcription model for the specified engine and model.
 - `ValueError`: If the engine is not supported
 - `ImportError`: If required dependencies are not installed
 
-### `transcribe()`
 
-Transcribe audio using ivrit.ai's transcription services.
-
-#### Parameters
-
-- **transcription_model** (`TranscriptionModel`): Pre-loaded TranscriptionModel object (required)
-- **path** (`str`, optional): Path to the audio file to transcribe (mutually exclusive with `url`)
-- **url** (`str`, optional): URL to download and transcribe (mutually exclusive with `path`)
-- **stream** (`bool`, optional): Whether to return results as a generator. Default: `False`
-- **verbose** (`bool`, optional): Whether to enable verbose output. Default: `False`
-
-#### Returns
-
-- If `stream=False`: Complete transcription result as dictionary
-- If `stream=True`: Generator yielding transcription segments
-
-#### Raises
-
-- `ValueError`: If both `path` and `url` are provided, or neither is provided
-- `FileNotFoundError`: If the specified path doesn't exist
-- `Exception`: For other transcription errors
-
-#### Example Response Format
-
-```python
-{
-    "text": "Complete transcribed text",
-    "segments": [
-        Segment(
-            text="Segment text",
-            start=0.0,
-            end=5.0,
-            extra_data={
-                "info": {
-                    "language": "he",
-                    "language_probability": 0.95
-                },
-                "words": [
-                    {
-                        "start": 0.0,
-                        "end": 1.2,
-                        "word": "Hello",
-                        "probability": 0.98
-                    }
-                ]
-            }
-        )
-    ],
-    "language": "he",
-    "engine": "faster-whisper",
-    "model": "base"
-}
-```
 
 ## Architecture
 
@@ -164,16 +98,16 @@ The ivrit package uses an object-oriented design with a base `TranscriptionModel
 #### Pattern 1: Using `load_model()` (Recommended)
 ```python
 # Step 1: Load the model
-model = load_model(engine="faster-whisper", model="base")
+model = ivrit.load_model(engine="faster-whisper", model="base")
 
 # Step 2: Transcribe audio
-result = transcribe(transcription_model=model, path="audio.mp3")
+result = model.transcribe(path="audio.mp3")
 ```
 
 #### Pattern 2: Direct Model Creation
 ```python
 # Create model directly
-model = FasterWhisperModel(model="base")
+model = ivrit.FasterWhisperModel(model="base")
 
 # Use the model
 result = model.transcribe(path="audio.mp3")
@@ -183,7 +117,7 @@ result = model.transcribe(path="audio.mp3")
 For multiple transcriptions, load the model once and reuse it:
 ```python
 # Load model once
-model = load_model(engine="faster-whisper", model="base")
+model = ivrit.load_model(engine="faster-whisper", model="base")
 
 # Use for multiple transcriptions
 result1 = model.transcribe(path="audio1.mp3")

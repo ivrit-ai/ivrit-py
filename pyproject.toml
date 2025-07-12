@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ivrit"
-version = "0.0.1"
+version = "0.0.2"
 description = "ivrit.ai helper package"
 authors = [
   { name="Yair Lifshitz", email="yair@ivrit.ai" },
@@ -27,6 +27,13 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
+dependencies = [
+    "faster-whisper>=1.1.1",
+    "requests>=2.32.3",
+    "stable-ts>=2.18.3",
+    "runpod>=1.7.7"
+]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0.0",
@@ -34,11 +41,6 @@ dev = [
     "black>=22.0.0",
     "isort>=5.0.0",
     "mypy>=1.0.0",
-]
-
-[project.optional-dependencies]
-faster-whisper = [
-    "faster-whisper>=1.1.1",
 ]
 
 
