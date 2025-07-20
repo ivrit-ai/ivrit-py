@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import base64
 import time
 import requests
+import json
 
 
 @dataclass
@@ -369,21 +370,88 @@ class StableWhisperModel(TranscriptionModel):
             raise
 
 
+class RunPodJob:
+    def __init__(self, api_key: str, endpoint_id: str, payload: dict):
+        self.api_key = api_key
+        self.endpoint_id = endpoint_id
+        self.base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+
+        # Submit the job immediately on creation
+        response = requests.post(
+            f"{self.base_url}/run",
+            headers=self.headers,
+            json=payload
+        )
+
+        if response.status_code == 401:
+            raise Exception("Invalid RunPod API key")
+
+        response.raise_for_status()
+
+        result = response.json()
+        self.job_id = result.get("id")
+
+    def status(self):
+        """Get job status"""
+        response = requests.get(
+            f"{self.base_url}/status/{self.job_id}",
+            headers=self.headers
+        )
+        response.raise_for_status()
+
+        status_response = response.json()
+        return status_response.get("status", "UNKNOWN")
+
+    def stream(self):
+        """Stream job results"""
+        while True:
+            response = requests.get(
+                f"{self.base_url}/stream/{self.job_id}",
+                headers=self.headers,
+                stream=True
+            )
+            response.raise_for_status()
+
+            # Expect a single response
+            try:
+                content = response.content.decode('utf-8')
+                data = json.loads(content)
+                if not data['status'] in ['IN_PROGRESS', 'COMPLETED']:
+                    break
+
+                for item in data['stream']:
+                    yield item['output']
+
+                if data['status'] == 'COMPLETED':
+                    return
+
+            except json.JSONDecodeError as e:
+                print(f"Failed to parse JSON response: {e}")
+                return
+
+    def cancel(self):
+        """Cancel the job"""
+        response = requests.post(
+            f"{self.base_url}/cancel/{self.job_id}",
+            headers=self.headers
+        )
+        response.raise_for_status()
+
+        return response.json()
+
+
 class RunPodModel(TranscriptionModel):
     """RunPod transcription model"""
     
-    def __init__(self, model: str, api_key: Optional[str] = None, endpoint_id: Optional[str] = None, core_engine: str = "faster-whisper"):
+    def __init__(self, model: str, api_key: str, endpoint_id: str, core_engine: str = "faster-whisper"):
         super().__init__(engine="runpod", model=model)
         
-        # Get API key and endpoint ID from environment or parameters
-        self.api_key = api_key or os.environ.get("RUNPOD_API_KEY")
-        self.endpoint_id = endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID")
-        
-        if not self.api_key:
-            raise ValueError("RunPod API key must be provided via 'api_key' parameter or RUNPOD_API_KEY environment variable")
-        
-        if not self.endpoint_id:
-            raise ValueError("RunPod endpoint ID must be provided via 'endpoint_id' parameter or RUNPOD_ENDPOINT_ID environment variable")
+        self.api_key = api_key
+        self.endpoint_id = endpoint_id
         
         # Validate core engine
         if core_engine not in ["faster-whisper", "stable-whisper"]:
@@ -395,13 +463,6 @@ class RunPodModel(TranscriptionModel):
         self.IN_QUEUE_TIMEOUT = 300
         self.MAX_STREAM_TIMEOUTS = 5
         self.RUNPOD_MAX_PAYLOAD_LEN = 10 * 1024 * 1024
-        
-        # Load runpod package
-        try:
-            import runpod
-            self.runpod = runpod
-        except ImportError:
-            raise ImportError("runpod is not installed. Please install it with: pip install runpod")
     
     def transcribe_core(
         self, 
@@ -454,10 +515,8 @@ class RunPodModel(TranscriptionModel):
         if len(str(payload)) > self.RUNPOD_MAX_PAYLOAD_LEN:
             raise ValueError(f"Payload length is {len(str(payload))}, exceeding max payload length of {self.RUNPOD_MAX_PAYLOAD_LEN}")
         
-        # Configure runpod endpoint and execute
-        self.runpod.api_key = self.api_key
-        ep = self.runpod.Endpoint(self.endpoint_id)
-        run_request = ep.run(payload)
+        # Create and execute RunPod job
+        run_request = RunPodJob(self.api_key, self.endpoint_id, payload)
         
         # Wait for task to be queued
         if verbose:
@@ -529,19 +588,19 @@ def load_model(
     Load a transcription model for the specified engine and model.
     
     Args:
-        engine: Transcription engine to use ('faster-whisper', 'stable-ts', or 'runpod')
+        engine: Transcription engine to use ('faster-whisper', 'stable-whisper', 'runpod', or 'stable-ts')
         model: Model name for the selected engine
         **kwargs: Additional arguments for specific engines:
             - faster-whisper: device
             - stable-whisper: device
-            - runpod: api_key, endpoint_id, core_engine
+            - runpod: api_key (required), endpoint_id (required), core_engine
             - stable-ts: (future implementation)
         
     Returns:
         TranscriptionModel object that can be used for transcription
         
     Raises:
-        ValueError: If the engine is not supported
+        ValueError: If the engine is not supported or required parameters are missing
         ImportError: If required dependencies are not installed
     """
     if engine == "faster-whisper":
