@@ -1,18 +1,17 @@
 """
 Audio transcription functionality for ivrit.ai
 """
-
+import base64
+import json
 import os
 import tempfile
-import urllib.request
-from typing import Generator, Union, Optional, Any, Dict
-from pathlib import Path
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-import base64
 import time
+import urllib.request
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, asdict
+from typing import Any, Dict, Generator, Optional, Union, List
+
 import requests
-import json
 
 
 @dataclass
@@ -22,7 +21,41 @@ class Segment:
     start: float
     end: float
     extra_data: Dict[str, Any]
+    speaker: Optional[str] = None
 
+def _get_audio_file_path(path: Optional[str] = None, url: Optional[str] = None, verbose: bool = False) -> str:
+    """
+    Get the audio file path.
+
+    Args:
+        path: Path to the audio file
+        url: URL to the audio file
+        verbose: Whether to print verbose output
+
+    Returns:
+        The audio file path
+    """
+    # make sure that only one of path or url is provided
+    if path is not None and url is not None:
+        raise ValueError("Cannot specify both 'path' and 'url' - they are mutually exclusive")
+    if path is None and url is None:
+        raise ValueError("Must specify either 'path' or 'url'")
+    
+    audio_path = path
+    temp_file = None
+
+    if url is not None:
+        if verbose:
+            print(f"Downloading audio from: {url}")
+        
+        temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
+        urllib.request.urlretrieve(url, temp_file.name)
+        audio_path = temp_file.name
+    
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+    return audio_path
 
 class TranscriptionModel(ABC):
     """Base class for transcription models"""
@@ -31,9 +64,35 @@ class TranscriptionModel(ABC):
         self.engine = engine
         self.model = model
         self.model_object = model_object
-    
+        self.device = "cpu"
+
     def __repr__(self):
         return f"{self.__class__.__name__}(engine='{self.engine}', model='{self.model}')"
+    
+    def _diarize(
+        self, 
+        audio_file: str, 
+        transcription_segments: List[Segment],
+        *,
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+        verbose: bool = False
+    ) -> List[Segment]:
+        """
+        Diarize the audio file.
+        """
+        import whisperx.diarize
+        if verbose:
+            print(f"Diarizing with {audio_file=}, {num_speakers=}, {min_speakers=}, {max_speakers=}")
+        diarization_model = whisperx.diarize.DiarizationPipeline(device=self.device)
+        diarization_segments = diarization_model(audio_file, num_speakers=num_speakers, min_speakers=min_speakers, max_speakers=max_speakers)
+        segments_asdict = {"segments": list(map(asdict, transcription_segments))}
+        diarized_segments = whisperx.diarize.assign_word_speakers(diarization_segments, segments_asdict)["segments"]
+        if verbose:
+            print("Diarization completed successfully")
+        diarized_segments = [Segment(**segment) for segment in diarized_segments]
+        return diarized_segments
     
     def transcribe(
         self,
@@ -42,7 +101,11 @@ class TranscriptionModel(ABC):
         url: Optional[str] = None,
         language: Optional[str] = None,
         stream: bool = False,
-        verbose: bool = False
+        diarize: bool = False,
+        num_speakers: Optional[int] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+        verbose: bool = False,
     ) -> Union[dict, Generator]:
         """
         Transcribe audio using this model.
@@ -52,6 +115,10 @@ class TranscriptionModel(ABC):
             url: URL to download and transcribe (mutually exclusive with path)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
+            diarize: Whether to enable speaker diarization
+            num_speakers: Number of speakers to diarize (ignored if diarize is False)
+            min_speakers: Minimum number of speakers to diarize (ignored if diarize is False)
+            max_speakers: Maximum number of speakers to diarize (ignored if diarize is False)
             verbose: Whether to enable verbose output
             
         Returns:
@@ -69,7 +136,12 @@ class TranscriptionModel(ABC):
         
         if path is None and url is None:
             raise ValueError("Must specify either 'path' or 'url'")
-        
+
+        if diarize:
+            stream = False
+            if verbose:
+                print("WARNING: Diarization is not supported for streaming")
+
         # Get streaming results from the model
         segments_generator = self.transcribe_core(path=path, url=url, language=language, verbose=verbose)
         
@@ -91,13 +163,18 @@ class TranscriptionModel(ABC):
             # Combine all text
             full_text = " ".join(segment.text for segment in segments)
             
-            return {
+            transcription_results = {
                 "text": full_text,
                 "segments": segments,
                 "language": segments[0].extra_data.get("language", language or "unknown"),
                 "engine": self.engine,
                 "model": self.model
             }
+            if diarize:
+                audio_file = _get_audio_file_path(path=path, url=url, verbose=verbose)
+                segments = self._diarize(audio_file=audio_file, transcription_segments=segments, num_speakers=num_speakers, min_speakers=min_speakers, max_speakers=max_speakers, verbose=verbose)
+                transcription_results["segments"] = segments
+            return transcription_results
     
     @abstractmethod
     def transcribe_core(
@@ -197,20 +274,7 @@ class FasterWhisperModel(TranscriptionModel):
         Transcribe using faster-whisper engine.
         """
         # Handle URL download if needed
-        audio_path = path
-        temp_file = None
-        
-        if url is not None:
-            if verbose:
-                print(f"Downloading audio from: {url}")
-            
-            temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
-            urllib.request.urlretrieve(url, temp_file.name)
-            audio_path = temp_file.name
-        
-        # Validate file exists
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        audio_path = _get_audio_file_path(path=path, url=url, verbose=verbose)
         
         if verbose:
             print(f"Using faster-whisper engine with model: {self.model}")
@@ -313,20 +377,7 @@ class StableWhisperModel(TranscriptionModel):
         Transcribe using stable-whisper engine.
         """
         # Handle URL download if needed
-        audio_path = path
-        temp_file = None
-        
-        if url is not None:
-            if verbose:
-                print(f"Downloading audio from: {url}")
-            
-            temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
-            urllib.request.urlretrieve(url, temp_file.name)
-            audio_path = temp_file.name
-        
-        # Validate file exists
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        audio_path = _get_audio_file_path(path=path, url=url, verbose=verbose)
         
         if verbose:
             print(f"Using stable-whisper engine with model: {self.model}")
