@@ -413,7 +413,7 @@ class RunPodJob:
             try:
                 content = response.content.decode('utf-8')
                 data = json.loads(content)
-                if not data['status'] in ['IN_PROGRESS', 'COMPLETED']:
+                if data['status'] not in ['IN_PROGRESS', 'COMPLETED']:
                     break
 
                 for item in data['stream']:
@@ -558,7 +558,7 @@ class RunPodModel(TranscriptionModel):
                 # If we get here, streaming is complete
                 break
                 
-            except requests.exceptions.ReadTimeout as e:
+            except requests.exceptions.ReadTimeout:
                 timeouts += 1
                 if timeouts > self.MAX_STREAM_TIMEOUTS:
                     raise Exception(f"Number of request.stream() timeouts exceeded the maximum ({self.MAX_STREAM_TIMEOUTS})")

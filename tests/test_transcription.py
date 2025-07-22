@@ -15,7 +15,7 @@ def setup_session():
     load_dotenv()
 
 @pytest.fixture(scope="module", params=["faster-whisper", "stable-whisper"])
-def model(request):
+def model(request: pytest.FixtureRequest) -> TranscriptionModel:
     engine = request.param
     model_ = load_model(engine=engine, model=MODEL_NAME, device="cpu")
     yield model_

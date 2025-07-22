@@ -43,7 +43,7 @@ from .utils import SAMPLE_RATE, load_audio
 DEFAULT_DIARIZATION_CHECKPOINT = "pyannote/speaker-diarization-3.1"
 
 
-def assign_word_speakers(
+def assign_speakers(
     diarization_df: pd.DataFrame,
     transcription_segments: List[Segment],
     fill_nearest: bool = False,
@@ -157,7 +157,7 @@ def speaker_diarization(
     )
     diarization_df["start"] = diarization_df["segment"].apply(lambda x: x.start)
     diarization_df["end"] = diarization_df["segment"].apply(lambda x: x.end)
-    diarized_segments = assign_word_speakers(diarization_df, transcription_segments)
+    diarized_segments = assign_speakers(diarization_df, transcription_segments)
     if verbose:
         print("Diarization completed successfully")
     return diarized_segments
