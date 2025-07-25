@@ -109,3 +109,7 @@ dmypy.json
 # Local data
 local_data/
 *.sqlite3
+
+
+# History
+.history/

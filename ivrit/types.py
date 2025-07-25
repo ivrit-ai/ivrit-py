@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 
@@ -9,8 +9,9 @@ class Segment:
     text: str
     start: float
     end: float
-    extra_data: Dict[str, Any]
     speaker: Optional[str] = None
+    extra_data: Dict[str, Any] = field(default_factory=dict)
+    
 
 @dataclass
 class Word:

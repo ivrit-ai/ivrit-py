@@ -9,7 +9,7 @@ from typing import Any, Generator, Optional, Union
 
 import requests
 
-from .core import Segment
+from .types import Segment
 from .utils import get_audio_file_path
 
 
@@ -33,10 +33,8 @@ class TranscriptionModel(ABC):
         url: Optional[str] = None,
         language: Optional[str] = None,
         stream: bool = False,
-        diarize: bool = False,
-        num_speakers: Optional[int] = None,
-        min_speakers: Optional[int] = None,
-        max_speakers: Optional[int] = None,
+        do_diarization: bool = False,
+        diarization_kwargs: Optional[dict] = None,
         verbose: bool = False,
     ) -> Union[dict, Generator]:
         """
@@ -47,10 +45,13 @@ class TranscriptionModel(ABC):
             url: URL to download and transcribe (mutually exclusive with path)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
-            diarize: Whether to enable speaker diarization
-            num_speakers: Number of speakers to diarize (ignored if diarize is False)
-            min_speakers: Minimum number of speakers to diarize (ignored if diarize is False)
-            max_speakers: Maximum number of speakers to diarize (ignored if diarize is False)
+            do_diarization: Whether to enable speaker diarization  
+            diarization_kwargs: Keyword arguments for diarization. Allowed keys are:
+                - checkpoint_path: Path to the checkpoint file for the diarization model.
+                - num_speakers: Number of speakers to diarize.
+                - min_speakers: Minimum number of speakers to diarize.
+                - max_speakers: Maximum number of speakers to diarize.
+                - use_auth_token: Hugging Face API token for authentication.
             verbose: Whether to enable verbose output
             
         Returns:
@@ -69,10 +70,8 @@ class TranscriptionModel(ABC):
         if path is None and url is None:
             raise ValueError("Must specify either 'path' or 'url'")
 
-        if diarize:
-            stream = False
-            if verbose:
-                print("WARNING: Diarization is not supported for streaming")
+        if do_diarization and stream:
+            raise ValueError("Diarization is not supported for streaming")
 
         # Get streaming results from the model
         segments_generator = self.transcribe_core(path=path, url=url, language=language, verbose=verbose)
@@ -91,6 +90,18 @@ class TranscriptionModel(ABC):
                     "engine": self.engine,
                     "model": self.model
                 }
+            if do_diarization:
+                from .diarization import diarize
+                
+                audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
+                diarization_kwargs = diarization_kwargs or {}
+                segments = diarize(
+                    audio=audio_path,
+                    transcription_segments=segments,
+                    device=self.device,
+                    verbose=verbose,
+                    **diarization_kwargs,
+                )
             
             # Combine all text
             full_text = " ".join(segment.text for segment in segments)
@@ -102,20 +113,7 @@ class TranscriptionModel(ABC):
                 "engine": self.engine,
                 "model": self.model
             }
-            if diarize:
-                from .diarization import speaker_diarization
-                
-                audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
-                segments = speaker_diarization(
-                    audio=audio_path,
-                    transcription_segments=segments,
-                    device=self.device,
-                    num_speakers=num_speakers,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
-                    verbose=verbose
-                )
-                transcription_results["segments"] = segments
+
             return transcription_results
     
     @abstractmethod

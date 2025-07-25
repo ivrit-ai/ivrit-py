@@ -24,7 +24,7 @@ def model(request: pytest.FixtureRequest) -> TranscriptionModel:
 
 
 def test_models_with_diarization(model: TranscriptionModel):
-    result = model.transcribe(path=TEST_INPUT_PATH, language=LANGUAGE, diarize=True)
+    result = model.transcribe(path=TEST_INPUT_PATH, language=LANGUAGE, do_diarization=True)
     for seg in result["segments"]:
         assert seg.speaker is not None
     assert result["engine"] == model.engine

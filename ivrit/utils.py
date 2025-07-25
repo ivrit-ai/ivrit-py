@@ -1,3 +1,7 @@
+"""
+This file includes modified code from WhisperX (https://github.com/m-bain/whisperX), originally licensed under the BSD 2-Clause License.
+"""
+import functools
 import os
 import subprocess
 import tempfile
@@ -9,7 +13,9 @@ import numpy.typing as npt
 
 SAMPLE_RATE = 16000
 
+_temp_dir = tempfile.TemporaryDirectory()
 
+@functools.cache
 def get_audio_file_path(
     path: Optional[str] = None, url: Optional[str] = None, verbose: bool = False
 ) -> str:
@@ -39,9 +45,9 @@ def get_audio_file_path(
         if verbose:
             print(f"Downloading audio from: {url}")
 
-        temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
-        urllib.request.urlretrieve(url, temp_file.name)
+        temp_file = tempfile.NamedTemporaryFile(dir=_temp_dir.name, suffix=".audio", delete=False)
         audio_path = temp_file.name
+        urllib.request.urlretrieve(url, audio_path)
 
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")

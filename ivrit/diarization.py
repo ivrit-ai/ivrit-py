@@ -1,31 +1,7 @@
 """
 Speaker diarization functionality for ivrit.ai
 ------------------------------------------------------------------------------------------------
-Portions of this code are derived from whisperX, which is licensed under the BSD-2-Clause License:
-
-Copyright (c) 2024, Max Bain
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
+This file includes modified code from WhisperX (https://github.com/m-bain/whisperX), originally licensed under the BSD 2-Clause License.
 """
 
 from pathlib import Path
@@ -37,7 +13,7 @@ import pandas as pd
 import torch
 from pyannote.audio import Pipeline
 
-from .core import Segment
+from .types import Segment
 from .utils import SAMPLE_RATE, load_audio
 
 DEFAULT_DIARIZATION_CHECKPOINT = "pyannote/speaker-diarization-3.1"
@@ -100,7 +76,7 @@ def assign_speakers(
     return transcription_segments
 
 
-def speaker_diarization(
+def diarize(
     audio: Union[str, npt.NDArray],
     transcription_segments: List[Segment],
     *,
@@ -140,6 +116,7 @@ def speaker_diarization(
         device = torch.device(device)
     if isinstance(audio, str):
         audio = load_audio(audio)
+
     audio_data = {
         "waveform": torch.from_numpy(audio[None, :]),
         "sample_rate": SAMPLE_RATE,
@@ -158,6 +135,7 @@ def speaker_diarization(
     diarization_df["start"] = diarization_df["segment"].apply(lambda x: x.start)
     diarization_df["end"] = diarization_df["segment"].apply(lambda x: x.end)
     diarized_segments = assign_speakers(diarization_df, transcription_segments)
+
     if verbose:
         print("Diarization completed successfully")
     return diarized_segments
