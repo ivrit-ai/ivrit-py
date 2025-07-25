@@ -1,27 +1,16 @@
 """
 Audio transcription functionality for ivrit.ai
 """
-
-import os
-import tempfile
-import urllib.request
-from typing import Generator, Union, Optional, Any, Dict
-from pathlib import Path
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import base64
-import time
-import requests
 import json
+import time
+from abc import ABC, abstractmethod
+from typing import Any, Generator, Optional, Union
 
+import requests
 
-@dataclass
-class Segment:
-    """Represents a transcription segment"""
-    text: str
-    start: float
-    end: float
-    extra_data: Dict[str, Any]
+from .types import Segment
+from .utils import get_audio_file_path
 
 
 class TranscriptionModel(ABC):
@@ -31,9 +20,11 @@ class TranscriptionModel(ABC):
         self.engine = engine
         self.model = model
         self.model_object = model_object
-    
+        self.device = "cpu"
+
     def __repr__(self):
         return f"{self.__class__.__name__}(engine='{self.engine}', model='{self.model}')"
+    
     
     def transcribe(
         self,
@@ -42,7 +33,9 @@ class TranscriptionModel(ABC):
         url: Optional[str] = None,
         language: Optional[str] = None,
         stream: bool = False,
-        verbose: bool = False
+        do_diarization: bool = False,
+        diarization_kwargs: Optional[dict] = None,
+        verbose: bool = False,
     ) -> Union[dict, Generator]:
         """
         Transcribe audio using this model.
@@ -52,6 +45,13 @@ class TranscriptionModel(ABC):
             url: URL to download and transcribe (mutually exclusive with path)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
+            do_diarization: Whether to enable speaker diarization  
+            diarization_kwargs: Keyword arguments for diarization. Allowed keys are:
+                - checkpoint_path: Path to the checkpoint file for the diarization model.
+                - num_speakers: Number of speakers to diarize.
+                - min_speakers: Minimum number of speakers to diarize.
+                - max_speakers: Maximum number of speakers to diarize.
+                - use_auth_token: Hugging Face API token for authentication.
             verbose: Whether to enable verbose output
             
         Returns:
@@ -69,7 +69,10 @@ class TranscriptionModel(ABC):
         
         if path is None and url is None:
             raise ValueError("Must specify either 'path' or 'url'")
-        
+
+        if do_diarization and stream:
+            raise ValueError("Diarization is not supported for streaming")
+
         # Get streaming results from the model
         segments_generator = self.transcribe_core(path=path, url=url, language=language, verbose=verbose)
         
@@ -87,17 +90,31 @@ class TranscriptionModel(ABC):
                     "engine": self.engine,
                     "model": self.model
                 }
+            if do_diarization:
+                from .diarization import diarize
+                
+                audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
+                diarization_kwargs = diarization_kwargs or {}
+                segments = diarize(
+                    audio=audio_path,
+                    transcription_segments=segments,
+                    device=self.device,
+                    verbose=verbose,
+                    **diarization_kwargs,
+                )
             
             # Combine all text
             full_text = " ".join(segment.text for segment in segments)
             
-            return {
+            transcription_results = {
                 "text": full_text,
                 "segments": segments,
                 "language": segments[0].extra_data.get("language", language or "unknown"),
                 "engine": self.engine,
                 "model": self.model
             }
+
+            return transcription_results
     
     @abstractmethod
     def transcribe_core(
@@ -197,20 +214,7 @@ class FasterWhisperModel(TranscriptionModel):
         Transcribe using faster-whisper engine.
         """
         # Handle URL download if needed
-        audio_path = path
-        temp_file = None
-        
-        if url is not None:
-            if verbose:
-                print(f"Downloading audio from: {url}")
-            
-            temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
-            urllib.request.urlretrieve(url, temp_file.name)
-            audio_path = temp_file.name
-        
-        # Validate file exists
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
         
         if verbose:
             print(f"Using faster-whisper engine with model: {self.model}")
@@ -313,20 +317,7 @@ class StableWhisperModel(TranscriptionModel):
         Transcribe using stable-whisper engine.
         """
         # Handle URL download if needed
-        audio_path = path
-        temp_file = None
-        
-        if url is not None:
-            if verbose:
-                print(f"Downloading audio from: {url}")
-            
-            temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
-            urllib.request.urlretrieve(url, temp_file.name)
-            audio_path = temp_file.name
-        
-        # Validate file exists
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
         
         if verbose:
             print(f"Using stable-whisper engine with model: {self.model}")
@@ -420,7 +411,7 @@ class RunPodJob:
             try:
                 content = response.content.decode('utf-8')
                 data = json.loads(content)
-                if not data['status'] in ['IN_PROGRESS', 'COMPLETED']:
+                if data['status'] not in ['IN_PROGRESS', 'COMPLETED']:
                     break
 
                 for item in data['stream']:
@@ -565,7 +556,7 @@ class RunPodModel(TranscriptionModel):
                 # If we get here, streaming is complete
                 break
                 
-            except requests.exceptions.ReadTimeout as e:
+            except requests.exceptions.ReadTimeout:
                 timeouts += 1
                 if timeouts > self.MAX_STREAM_TIMEOUTS:
                     raise Exception(f"Number of request.stream() timeouts exceeded the maximum ({self.MAX_STREAM_TIMEOUTS})")
