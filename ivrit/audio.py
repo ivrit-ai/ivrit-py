@@ -64,9 +64,6 @@ class TranscriptionModel(ABC):
         if path is None and url is None:
             raise ValueError("Must specify either 'path' or 'url'")
 
-        if diarize and stream:
-            raise ValueError("Diarization is not supported for streaming")
-
         # Get streaming results from the model
         segments_generator = self.transcribe_core(path=path, url=url, language=language, diarize=diarize, verbose=verbose, **kwargs)
         
