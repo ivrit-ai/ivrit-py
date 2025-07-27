@@ -28,32 +28,32 @@ def match_speaker_to_interval(
     """
     Match the best speaker for a given time interval.
     Note: This function modifies the diarization_df in place.
-    
+
     Args:
         diarization_df: Diarization dataframe with columns ['start', 'end', 'speaker']
         start: Start time of the interval
         end: End time of the interval
         fill_nearest: If True, match speakers even when there's no direct time overlap
-        
+
     Returns:
         The speaker ID with the highest intersection, or None if no match found
     """
     # Calculate intersection and union
     diarization_df["intersection"] = np.minimum(diarization_df["end"], end) - np.maximum(diarization_df["start"], start)
     diarization_df["union"] = np.maximum(diarization_df["end"], end) - np.minimum(diarization_df["start"], start)
-    
+
     # Filter based on fill_nearest flag
     if not fill_nearest:
         tmp_df = diarization_df[diarization_df["intersection"] > 0]
     else:
         tmp_df = diarization_df
-    
+
     speaker = None
-    
+
     if len(tmp_df) > 0:
         # Sum over speakers and get the one with highest intersection
         speaker = tmp_df.groupby("speaker")["intersection"].sum().sort_values(ascending=False).index[0]
-    
+
     return speaker
 
 
@@ -82,9 +82,11 @@ def assign_speakers(
         if hasattr(seg, "words"):
             for word in seg.words:
                 if word["start"]:
-                    speaker = match_speaker_to_interval(diarization_df, start=word["start"], end=word["end"], fill_nearest=fill_nearest)
+                    speaker = match_speaker_to_interval(
+                        diarization_df, start=word["start"], end=word["end"], fill_nearest=fill_nearest
+                    )
                     word["speaker"] = speaker
-                    
+
     return transcription_segments
 
 

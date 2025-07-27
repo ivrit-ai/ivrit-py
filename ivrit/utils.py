@@ -1,6 +1,7 @@
 """
 This file includes modified code from WhisperX (https://github.com/m-bain/whisperX), originally licensed under the BSD 2-Clause License.
 """
+
 import os
 import subprocess
 import tempfile
@@ -13,9 +14,7 @@ import numpy.typing as npt
 SAMPLE_RATE = 16000
 
 
-def get_audio_file_path(
-    path: Optional[str] = None, url: Optional[str] = None, verbose: bool = False
-) -> str:
+def get_audio_file_path(path: Optional[str] = None, url: Optional[str] = None, verbose: bool = False) -> str:
     """
     Get the audio file path.
     Note: In case of url, the file is downloaded to a temporary file, which is not deleted automatically.
@@ -31,9 +30,7 @@ def get_audio_file_path(
     """
     # make sure that only one of path or url is provided
     if path is not None and url is not None:
-        raise ValueError(
-            "Cannot specify both 'path' and 'url' - they are mutually exclusive"
-        )
+        raise ValueError("Cannot specify both 'path' and 'url' - they are mutually exclusive")
     if path is None and url is None:
         raise ValueError("Must specify either 'path' or 'url'")
 

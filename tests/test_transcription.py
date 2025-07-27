@@ -3,15 +3,17 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from ivrit.audio import load_model, TranscriptionModel
+from ivrit.audio import TranscriptionModel, load_model
 
 TEST_INPUT_PATH = str(Path(__file__).parent / "test_input_10s.mp3")
 MODEL_NAME = "large-v3-turbo"
 LANGUAGE = "he"
 
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_session():
     load_dotenv()
+
 
 @pytest.fixture(scope="module", params=["faster-whisper", "stable-whisper"])
 def model(request: pytest.FixtureRequest) -> TranscriptionModel:

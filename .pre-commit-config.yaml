@@ -1,0 +1,37 @@
+repos:
+  - repo: local
+    hooks:
+      - id: end-of-file-fixer
+        name: end-of-file-fixer
+        entry: uv run end-of-file-fixer
+        language: system
+        types: [text]
+      - id: check-added-large-files
+        name: check-added-large-files
+        entry: uv run check-added-large-files
+        language: system
+      - id: check-yaml
+        name: check-yaml
+        entry: uv run check-yaml
+        language: system
+        files: \.(yaml|yml)$
+      - id: check-json
+        name: check-json
+        entry: uv run check-json
+        language: system
+        files: \.(json)$
+      - id: ruff-check
+        name: ruff-check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: taplo-format
+        name: taplo-format
+        entry: uv run taplo format
+        language: system
+        files: \.(toml)$

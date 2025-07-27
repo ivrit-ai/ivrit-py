@@ -2,8 +2,8 @@
 ivrit - Python package providing wrappers around ivrit.ai's capabilities
 """
 
-__version__ = '0.0.1'
+__version__ = "0.0.1"
 
-from .audio import load_model, TranscriptionModel, Segment, FasterWhisperModel, StableWhisperModel, RunPodModel
+from .audio import FasterWhisperModel, RunPodModel, StableWhisperModel, TranscriptionModel, load_model
 
-__all__ = ['load_model', 'TranscriptionModel', 'Segment'] 
+__all__ = ["FasterWhisperModel", "RunPodModel", "StableWhisperModel", "TranscriptionModel", "load_model"]
