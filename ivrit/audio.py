@@ -3,6 +3,7 @@ Audio transcription functionality for ivrit.ai
 """
 import base64
 import json
+import os
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Generator, Optional, Union
@@ -265,6 +266,10 @@ class FasterWhisperModel(TranscriptionModel):
             if verbose:
                 print(f"Error during transcription: {e}")
             raise
+        
+        finally:
+            if url is not None and os.path.exists(audio_path):
+                os.remove(audio_path)
 
 
 class StableWhisperModel(TranscriptionModel):
@@ -389,7 +394,10 @@ class StableWhisperModel(TranscriptionModel):
             if verbose:
                 print(f"Error during transcription: {e}")
             raise
-
+        
+        finally:
+            if url is not None and os.path.exists(audio_path):
+                os.remove(audio_path)
 
 class RunPodJob:
     def __init__(self, api_key: str, endpoint_id: str, payload: dict):
