@@ -20,7 +20,6 @@ class TranscriptionModel(ABC):
         self.engine = engine
         self.model = model
         self.model_object = model_object
-        self.device = "cpu"
 
     def __repr__(self):
         return f"{self.__class__.__name__}(engine='{self.engine}', model='{self.model}')"
@@ -33,9 +32,9 @@ class TranscriptionModel(ABC):
         url: Optional[str] = None,
         language: Optional[str] = None,
         stream: bool = False,
-        do_diarization: bool = False,
-        diarization_kwargs: Optional[dict] = None,
+        diarize: bool = False,
         verbose: bool = False,
+        **kwargs,
     ) -> Union[dict, Generator]:
         """
         Transcribe audio using this model.
@@ -45,15 +44,9 @@ class TranscriptionModel(ABC):
             url: URL to download and transcribe (mutually exclusive with path)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
-            do_diarization: Whether to enable speaker diarization  
-            diarization_kwargs: Keyword arguments for diarization. Allowed keys are:
-                - checkpoint_path: Path to the checkpoint file for the diarization model.
-                - num_speakers: Number of speakers to diarize.
-                - min_speakers: Minimum number of speakers to diarize.
-                - max_speakers: Maximum number of speakers to diarize.
-                - use_auth_token: Hugging Face API token for authentication.
+            diarize: Whether to enable speaker diarization  
             verbose: Whether to enable verbose output
-            
+            **kwargs: Additional keyword arguments for the transcription model.
         Returns:
             If stream=True: Generator yielding transcription segments
             If stream=False: Complete transcription result as dictionary
@@ -70,11 +63,11 @@ class TranscriptionModel(ABC):
         if path is None and url is None:
             raise ValueError("Must specify either 'path' or 'url'")
 
-        if do_diarization and stream:
+        if diarize and stream:
             raise ValueError("Diarization is not supported for streaming")
 
         # Get streaming results from the model
-        segments_generator = self.transcribe_core(path=path, url=url, language=language, verbose=verbose)
+        segments_generator = self.transcribe_core(path=path, url=url, language=language, diarize=diarize, verbose=verbose, **kwargs)
         
         if stream:
             # Return generator directly
@@ -90,18 +83,6 @@ class TranscriptionModel(ABC):
                     "engine": self.engine,
                     "model": self.model
                 }
-            if do_diarization:
-                from .diarization import diarize
-                
-                audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
-                diarization_kwargs = diarization_kwargs or {}
-                segments = diarize(
-                    audio=audio_path,
-                    transcription_segments=segments,
-                    device=self.device,
-                    verbose=verbose,
-                    **diarization_kwargs,
-                )
             
             # Combine all text
             full_text = " ".join(segment.text for segment in segments)
@@ -123,7 +104,9 @@ class TranscriptionModel(ABC):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Core transcription method that must be implemented by derived classes.
@@ -132,12 +115,13 @@ class TranscriptionModel(ABC):
             path: Path to the audio file to transcribe (mutually exclusive with url)
             url: URL to download and transcribe (mutually exclusive with path)
             language: Language code for transcription
+            diarize: Whether to enable speaker diarization
             verbose: Whether to enable verbose output
+            **kwargs: Additional keyword arguments for the transcription model.
             
         Returns:
             Generator yielding Segment objects
         """
-        pass
 
 
 def get_device_and_index(device: str) -> tuple[str, Optional[int]]:
@@ -208,7 +192,9 @@ class FasterWhisperModel(TranscriptionModel):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Transcribe using faster-whisper engine.
@@ -221,7 +207,22 @@ class FasterWhisperModel(TranscriptionModel):
             print(f"Processing file: {audio_path}")
             if self.model_object:
                 print(f"Using pre-loaded model: {self.model_object}")
+            if diarize:
+                print("Diarization is enabled")
         
+        if diarize:
+            from .diarization import diarize as diarize_func, match_speaker_to_interval
+            
+            diarizition_df = diarize_func(
+                audio=audio_path,
+                device=self.device,
+                checkpoint_path=kwargs.get("checkpoint_path", None),
+                num_speakers=kwargs.get("num_speakers", None),
+                min_speakers=kwargs.get("min_speakers", None),
+                max_speakers=kwargs.get("max_speakers", None),
+                use_auth_token=kwargs.get("use_auth_token", None),
+                verbose=verbose,
+            )
         try:
             # Transcribe using faster-whisper directly with file path
             segments, info = self.model_object.transcribe(audio_path, language=language)
@@ -247,12 +248,18 @@ class FasterWhisperModel(TranscriptionModel):
                             pass
                 
                 # Create Segment object
-                yield Segment(
+                segment = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
                     extra_data=extra_data
                 )
+
+                if diarize:
+                    speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
+                    segment.speaker = speaker
+                
+                yield segment
                 
         except Exception as e:
             if verbose:
@@ -311,7 +318,9 @@ class StableWhisperModel(TranscriptionModel):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Transcribe using stable-whisper engine.
@@ -324,7 +333,22 @@ class StableWhisperModel(TranscriptionModel):
             print(f"Processing file: {audio_path}")
             if self.model_object:
                 print(f"Using pre-loaded model: {self.model_object}")
+            if diarize:
+                print("Diarization is enabled")
         
+        if diarize:
+            from .diarization import diarize as diarize_func, match_speaker_to_interval
+            
+            diarizition_df = diarize_func(
+                audio=audio_path,
+                device=self.device,
+                checkpoint_path=kwargs.get("checkpoint_path", None),
+                num_speakers=kwargs.get("num_speakers", None),
+                min_speakers=kwargs.get("min_speakers", None),
+                max_speakers=kwargs.get("max_speakers", None),
+                use_auth_token=kwargs.get("use_auth_token", None),
+                verbose=verbose,
+            )   
         try:
             # Transcribe using stable-whisper with word timestamps
             result = self.model_object.transcribe(audio_path, language=language, word_timestamps=True)
@@ -348,12 +372,18 @@ class StableWhisperModel(TranscriptionModel):
                             pass
                 
                 # Create Segment object
-                yield Segment(
+                segment = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
                     extra_data=extra_data
                 )
+
+                if diarize:
+                    speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
+                    segment.speaker = speaker
+                
+                yield segment
                 
         except Exception as e:
             if verbose:
@@ -461,7 +491,9 @@ class RunPodModel(TranscriptionModel):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Transcribe using RunPod engine.
@@ -475,6 +507,9 @@ class RunPodModel(TranscriptionModel):
             data_source = url
         else:
             raise ValueError("Must specify either 'path' or 'url'")
+        
+        if diarize:
+            raise NotImplementedError("Diarization is not supported for RunPod engine")
         
         if verbose:
             print(f"Using RunPod engine with model: {self.model}")
