@@ -255,7 +255,7 @@ class FasterWhisperModel(TranscriptionModel):
 
                 if diarize:
                     speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
-                    segment.speaker = speaker
+                    segment.speakers = [speaker]
                 
                 yield segment
                 
@@ -383,7 +383,7 @@ class StableWhisperModel(TranscriptionModel):
 
                 if diarize:
                     speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
-                    segment.speaker = speaker
+                    segment.speakers = [speaker]
                 
                 yield segment
                 
