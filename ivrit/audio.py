@@ -1,27 +1,17 @@
 """
 Audio transcription functionality for ivrit.ai
 """
-
-import os
-import tempfile
-import urllib.request
-from typing import Generator, Union, Optional, Any, Dict
-from pathlib import Path
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import base64
-import time
-import requests
 import json
+import os
+import time
+from abc import ABC, abstractmethod
+from typing import Any, Generator, Optional, Union
 
+import requests
 
-@dataclass
-class Segment:
-    """Represents a transcription segment"""
-    text: str
-    start: float
-    end: float
-    extra_data: Dict[str, Any]
+from .types import Segment
+from .utils import get_audio_file_path
 
 
 class TranscriptionModel(ABC):
@@ -31,9 +21,10 @@ class TranscriptionModel(ABC):
         self.engine = engine
         self.model = model
         self.model_object = model_object
-    
+
     def __repr__(self):
         return f"{self.__class__.__name__}(engine='{self.engine}', model='{self.model}')"
+    
     
     def transcribe(
         self,
@@ -42,7 +33,9 @@ class TranscriptionModel(ABC):
         url: Optional[str] = None,
         language: Optional[str] = None,
         stream: bool = False,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Union[dict, Generator]:
         """
         Transcribe audio using this model.
@@ -52,8 +45,9 @@ class TranscriptionModel(ABC):
             url: URL to download and transcribe (mutually exclusive with path)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
+            diarize: Whether to enable speaker diarization  
             verbose: Whether to enable verbose output
-            
+            **kwargs: Additional keyword arguments for the transcription model.
         Returns:
             If stream=True: Generator yielding transcription segments
             If stream=False: Complete transcription result as dictionary
@@ -69,9 +63,9 @@ class TranscriptionModel(ABC):
         
         if path is None and url is None:
             raise ValueError("Must specify either 'path' or 'url'")
-        
+
         # Get streaming results from the model
-        segments_generator = self.transcribe_core(path=path, url=url, language=language, verbose=verbose)
+        segments_generator = self.transcribe_core(path=path, url=url, language=language, diarize=diarize, verbose=verbose, **kwargs)
         
         if stream:
             # Return generator directly
@@ -91,13 +85,15 @@ class TranscriptionModel(ABC):
             # Combine all text
             full_text = " ".join(segment.text for segment in segments)
             
-            return {
+            transcription_results = {
                 "text": full_text,
                 "segments": segments,
                 "language": segments[0].extra_data.get("language", language or "unknown"),
                 "engine": self.engine,
                 "model": self.model
             }
+
+            return transcription_results
     
     @abstractmethod
     def transcribe_core(
@@ -106,7 +102,9 @@ class TranscriptionModel(ABC):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Core transcription method that must be implemented by derived classes.
@@ -115,12 +113,13 @@ class TranscriptionModel(ABC):
             path: Path to the audio file to transcribe (mutually exclusive with url)
             url: URL to download and transcribe (mutually exclusive with path)
             language: Language code for transcription
+            diarize: Whether to enable speaker diarization
             verbose: Whether to enable verbose output
+            **kwargs: Additional keyword arguments for the transcription model.
             
         Returns:
             Generator yielding Segment objects
         """
-        pass
 
 
 def get_device_and_index(device: str) -> tuple[str, Optional[int]]:
@@ -191,33 +190,37 @@ class FasterWhisperModel(TranscriptionModel):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Transcribe using faster-whisper engine.
         """
         # Handle URL download if needed
-        audio_path = path
-        temp_file = None
-        
-        if url is not None:
-            if verbose:
-                print(f"Downloading audio from: {url}")
-            
-            temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
-            urllib.request.urlretrieve(url, temp_file.name)
-            audio_path = temp_file.name
-        
-        # Validate file exists
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
         
         if verbose:
             print(f"Using faster-whisper engine with model: {self.model}")
             print(f"Processing file: {audio_path}")
             if self.model_object:
                 print(f"Using pre-loaded model: {self.model_object}")
+            if diarize:
+                print("Diarization is enabled")
         
+        if diarize:
+            from .diarization import diarize as diarize_func, match_speaker_to_interval
+            
+            diarizition_df = diarize_func(
+                audio=audio_path,
+                device=self.device,
+                checkpoint_path=kwargs.get("checkpoint_path", None),
+                num_speakers=kwargs.get("num_speakers", None),
+                min_speakers=kwargs.get("min_speakers", None),
+                max_speakers=kwargs.get("max_speakers", None),
+                use_auth_token=kwargs.get("use_auth_token", None),
+                verbose=verbose,
+            )
         try:
             # Transcribe using faster-whisper directly with file path
             segments, info = self.model_object.transcribe(audio_path, language=language)
@@ -243,17 +246,27 @@ class FasterWhisperModel(TranscriptionModel):
                             pass
                 
                 # Create Segment object
-                yield Segment(
+                segment = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
                     extra_data=extra_data
                 )
+
+                if diarize:
+                    speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
+                    segment.speaker = speaker
+                
+                yield segment
                 
         except Exception as e:
             if verbose:
                 print(f"Error during transcription: {e}")
             raise
+        
+        finally:
+            if url is not None and os.path.exists(audio_path):
+                os.remove(audio_path)
 
 
 class StableWhisperModel(TranscriptionModel):
@@ -307,33 +320,37 @@ class StableWhisperModel(TranscriptionModel):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Transcribe using stable-whisper engine.
         """
         # Handle URL download if needed
-        audio_path = path
-        temp_file = None
-        
-        if url is not None:
-            if verbose:
-                print(f"Downloading audio from: {url}")
-            
-            temp_file = tempfile.NamedTemporaryFile(suffix=".audio")
-            urllib.request.urlretrieve(url, temp_file.name)
-            audio_path = temp_file.name
-        
-        # Validate file exists
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+        audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
         
         if verbose:
             print(f"Using stable-whisper engine with model: {self.model}")
             print(f"Processing file: {audio_path}")
             if self.model_object:
                 print(f"Using pre-loaded model: {self.model_object}")
+            if diarize:
+                print("Diarization is enabled")
         
+        if diarize:
+            from .diarization import diarize as diarize_func, match_speaker_to_interval
+            
+            diarizition_df = diarize_func(
+                audio=audio_path,
+                device=self.device,
+                checkpoint_path=kwargs.get("checkpoint_path", None),
+                num_speakers=kwargs.get("num_speakers", None),
+                min_speakers=kwargs.get("min_speakers", None),
+                max_speakers=kwargs.get("max_speakers", None),
+                use_auth_token=kwargs.get("use_auth_token", None),
+                verbose=verbose,
+            )   
         try:
             # Transcribe using stable-whisper with word timestamps
             result = self.model_object.transcribe(audio_path, language=language, word_timestamps=True)
@@ -357,18 +374,27 @@ class StableWhisperModel(TranscriptionModel):
                             pass
                 
                 # Create Segment object
-                yield Segment(
+                segment = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
                     extra_data=extra_data
                 )
+
+                if diarize:
+                    speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
+                    segment.speaker = speaker
+                
+                yield segment
                 
         except Exception as e:
             if verbose:
                 print(f"Error during transcription: {e}")
             raise
-
+        
+        finally:
+            if url is not None and os.path.exists(audio_path):
+                os.remove(audio_path)
 
 class RunPodJob:
     def __init__(self, api_key: str, endpoint_id: str, payload: dict):
@@ -420,7 +446,7 @@ class RunPodJob:
             try:
                 content = response.content.decode('utf-8')
                 data = json.loads(content)
-                if not data['status'] in ['IN_PROGRESS', 'COMPLETED']:
+                if data['status'] not in ['IN_PROGRESS', 'COMPLETED']:
                     break
 
                 for item in data['stream']:
@@ -470,7 +496,9 @@ class RunPodModel(TranscriptionModel):
         path: Optional[str] = None,
         url: Optional[str] = None,
         language: Optional[str] = None,
-        verbose: bool = False
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Transcribe using RunPod engine.
@@ -484,6 +512,9 @@ class RunPodModel(TranscriptionModel):
             data_source = url
         else:
             raise ValueError("Must specify either 'path' or 'url'")
+        
+        if diarize:
+            raise NotImplementedError("Diarization is not supported for RunPod engine")
         
         if verbose:
             print(f"Using RunPod engine with model: {self.model}")
@@ -565,7 +596,7 @@ class RunPodModel(TranscriptionModel):
                 # If we get here, streaming is complete
                 break
                 
-            except requests.exceptions.ReadTimeout as e:
+            except requests.exceptions.ReadTimeout:
                 timeouts += 1
                 if timeouts > self.MAX_STREAM_TIMEOUTS:
                     raise Exception(f"Number of request.stream() timeouts exceeded the maximum ({self.MAX_STREAM_TIMEOUTS})")
