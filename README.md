@@ -162,7 +162,51 @@ Stable and reliable transcription using Stable-TS models.
 
 ## Development
 
+### Using uv
+
+This project uses [uv](https://docs.astral.sh/uv/) for fast Python package and project management. uv provides a unified interface for managing Python versions, dependencies, and virtual environments.
+
+#### Installing uv
+
+Install uv using the official installer:
+
+```bash
+# On macOS and Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# On Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Or via pip
+pip install uv
+```
+
+#### Environment Setup
+
+uv automatically manages virtual environments and dependencies. To set up the development environment:
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd ivritu
+
+# uv will automatically create a virtual environment and install dependencies
+uv sync --all-extras
+```
+
+All development commands should be run with `uv run` prefix to ensure they use the correct environment and dependencies.
+
 ### Installation for Development
+
+With uv (recommended):
+
+```bash
+git clone <repository-url>
+cd ivrit
+uv sync --all-extras
+```
+
+Or with traditional pip:
 
 ```bash
 git clone <repository-url>
@@ -170,17 +214,43 @@ cd ivrit
 pip install -e ".[dev]"
 ```
 
+### Pre-commit Hooks
+
+This project uses pre-commit hooks for code quality and formatting. Install them with:
+
+```bash
+uv run pre-commit install
+```
+
+The hooks will automatically run on each commit and include:
+- End-of-file fixing
+- Large file checks
+- YAML and JSON validation
+- Code linting and formatting with Ruff
+- TOML formatting with Taplo
+
+To run the hooks manually on all files:
+
+```bash
+uv run pre-commit run --all-files
+```
+
 ### Running Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ### Code Formatting
 
+Code formatting and linting are handled automatically by pre-commit hooks using Ruff. To run manually:
+
 ```bash
-black .
-isort .
+# Check and fix linting issues
+uv run ruff check --fix
+
+# Format code
+uv run ruff format
 ```
 
 ## License
