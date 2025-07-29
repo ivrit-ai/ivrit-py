@@ -30,6 +30,41 @@ result = model.transcribe(path="audio.mp3")
 print(result["text"])
 ```
 
+#### Speaker Diarization
+
+Enable speaker diarization to identify "who spoke when" in your audio files.
+We use [pyannote.audio](https://github.com/pyannote/pyannote-audio) for speaker diarization.
+
+⚠️ Note: Since it's based on an off-the-shelf model, speaker diarization is not perfect, and is provided as a best-effort.
+
+**Prerequisites:**
+1. Accept [pyannote/segmentation-3.0](https://hf.co/pyannote/segmentation-3.0) user conditions
+2. Accept [pyannote/speaker-diarization-3.1](https://hf.co/pyannote/speaker-diarization-3.1) user conditions  
+3. Create access token at [hf.co/settings/tokens](https://hf.co/settings/tokens) and (optionally) set as environment variable (e.g., `HF_TOKEN`)
+
+```python
+# Transcribe with speaker diarization
+model = ivrit.load_model(engine="faster-whisper", model="ivrit-ai/whisper-large-v3-turbo-ct2")
+result = model.transcribe(path="audio.mp3", diarize=True)
+
+# Access speaker information
+for segment in result["segments"]:
+    speaker = segment.get("speaker", "Unknown")
+    print(f"Speaker {speaker}: {segment['text']}")
+
+# With additional diarization options
+result = model.transcribe(
+    path="audio.mp3",
+    diarize=True,
+    num_speakers=2,  # Specify exact number of speakers
+    # min_speakers=2,  # Or specify range
+    # max_speakers=4
+)
+
+# Alternative: pass token explicitly (if not set as environment variable)
+result = model.transcribe(path="audio.mp3", diarize=True, use_auth_token="HF_TOKEN_GOES_HERE")
+```
+
 #### Transcribe from URL
 
 ```python
@@ -58,6 +93,11 @@ for segment in model.transcribe(path="audio.mp3", stream=True):
     print(f"Segment: {segment.text}")
     for word in segment.extra_data.get('words', []):
         print(f"  {word['start']:.2f}s - {word['end']:.2f}s: '{word['word']}'")
+
+# Streaming with speaker diarization
+for segment in model.transcribe(path="audio.mp3", stream=True, diarize=True):
+    speakers = segment.speakers[0] if segment.speakers else "Unknown"
+    print(f"{segment.start:.2f}s - {segment.end:.2f}s: Speaker {speakers}: {segment.text}")
 ```
 
 ## API Reference
@@ -81,6 +121,24 @@ Load a transcription model for the specified engine and model.
 
 - `ValueError`: If the engine is not supported
 - `ImportError`: If required dependencies are not installed
+
+### `TranscriptionModel.transcribe()`
+
+Transcribe audio with optional speaker diarization.
+
+#### Parameters
+
+- **path** (`str`, optional): Path to the audio file to transcribe (mutually exclusive with url)
+- **url** (`str`, optional): URL to download and transcribe (mutually exclusive with path)  
+- **language** (`str`, optional): Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+- **stream** (`bool`, optional): Whether to return results as a generator (True) or full result (False). Default: `False`
+- **diarize** (`bool`, optional): Whether to enable speaker diarization. Default: `False`
+- **verbose** (`bool`, optional): Whether to enable verbose output. Default: `False`
+- **kwargs**: Additional keyword arguments for the transcription model and diarization. For diarization options, see [pyannote.audio documentation](https://github.com/pyannote/pyannote-audio).
+
+#### Returns
+
+- Dictionary with transcription results (when `stream=False`) or Generator of `Segment` objects (when `stream=True`)
 
 
 
