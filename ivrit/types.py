@@ -11,7 +11,7 @@ class Segment:
     end: float
     speakers: List[str] = field(default_factory=list)
     extra_data: Dict[str, Any] = field(default_factory=dict)
-    
+
 
 @dataclass
 class Word:
