@@ -28,11 +28,15 @@ classifiers = [
 ]
 
 dependencies = [
-    "faster-whisper>=1.1.1",
     "numpy>=1.20.0",
-    "pyannote-audio>=3.3.2",
     "requests>=2.32.3",
+]
+
+[project.optional-dependencies]
+local = [
+    "pyannote-audio>=3.3.2",
     "stable-ts-whisperless>=2.18.3",
+    "faster-whisper>=1.1.1",
 ]
 
 [tool.uv.workspace]
