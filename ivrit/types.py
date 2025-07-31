@@ -1,10 +1,18 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
-from dataclasses_json import dataclass_json
+import json
 
-@dataclass_json
+
+class Serializable:
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def to_json(self, **kwargs) -> str:
+        return json.dumps(self.to_dict(), **kwargs)
+
+
 @dataclass
-class Segment:
+class Segment(Serializable):
     """Represents a transcription segment"""
 
     text: str
@@ -14,9 +22,8 @@ class Segment:
     extra_data: Dict[str, Any] = field(default_factory=dict)
     
 
-@dataclass_json
 @dataclass
-class Word:
+class Word(Serializable):
     """Represents a word in a transcription segment"""
 
     text: str
