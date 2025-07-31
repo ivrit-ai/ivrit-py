@@ -14,7 +14,7 @@ SAMPLE_RATE = 16000
 
 
 def get_audio_file_path(
-    path: Optional[str] = None, url: Optional[str] = None, verbose: bool = False
+    file: Optional[str] = None, url: Optional[str] = None, verbose: bool = False
 ) -> str:
     """
     Get the audio file path.
@@ -22,22 +22,22 @@ def get_audio_file_path(
     The caller is responsible for deleting the file after use.
 
     Args:
-        path: Path to the audio file
+        file: Path to the audio file
         url: URL to the audio file
         verbose: Whether to print verbose output
 
     Returns:
         The audio file path
     """
-    # make sure that only one of path or url is provided
-    if path is not None and url is not None:
+    # make sure that only one of file or url is provided
+    if file is not None and url is not None:
         raise ValueError(
-            "Cannot specify both 'path' and 'url' - they are mutually exclusive"
+            "Cannot specify both 'file' and 'url' - they are mutually exclusive"
         )
-    if path is None and url is None:
-        raise ValueError("Must specify either 'path' or 'url'")
+    if file is None and url is None:
+        raise ValueError("Must specify either 'file' or 'url'")
 
-    audio_path = path
+    audio_path = file
 
     if url is not None:
         if verbose:
