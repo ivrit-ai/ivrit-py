@@ -5,8 +5,10 @@ Python package providing wrappers around ivrit.ai's capabilities.
 ## Installation
 
 ```bash
-pip install ivrit
+pip install ivrit[local]
 ```
+
+Note: you can omit the `[local]` part if you don't want to use the local models and use the RunPod models instead.
 
 ## Usage
 
