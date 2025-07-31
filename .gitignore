@@ -113,3 +113,7 @@ local_data/
 
 # History
 .history/
+
+# General
+
+*.opus
