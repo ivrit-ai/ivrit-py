@@ -10,8 +10,8 @@ from typing import Any, Generator, Optional, Union
 
 import requests
 
+from . import utils
 from .types import Segment
-from .utils import get_audio_file_path
 
 
 class TranscriptionModel(ABC):
@@ -31,6 +31,7 @@ class TranscriptionModel(ABC):
         *,
         path: Optional[str] = None,
         url: Optional[str] = None,
+        blob: Optional[str] = None,
         language: Optional[str] = None,
         stream: bool = False,
         diarize: bool = False,
@@ -41,8 +42,9 @@ class TranscriptionModel(ABC):
         Transcribe audio using this model.
         
         Args:
-            path: Path to the audio file to transcribe (mutually exclusive with url)
-            url: URL to download and transcribe (mutually exclusive with path)
+            path: Path to the audio file to transcribe (mutually exclusive with url and blob)
+            url: URL to download and transcribe (mutually exclusive with path and blob)
+            blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
             diarize: Whether to enable speaker diarization  
@@ -53,19 +55,20 @@ class TranscriptionModel(ABC):
             If stream=False: Complete transcription result as dictionary
             
         Raises:
-            ValueError: If both path and url are provided, or neither is provided
+            ValueError: If multiple input sources are provided, or none is provided
             FileNotFoundError: If the specified path doesn't exist
             Exception: For other transcription errors
         """
         # Validate arguments
-        if path is not None and url is not None:
-            raise ValueError("Cannot specify both 'path' and 'url' - they are mutually exclusive")
+        provided_args = [arg for arg in [path, url, blob] if arg is not None]
+        if len(provided_args) > 1:
+            raise ValueError("Cannot specify multiple input sources - path, url, and blob are mutually exclusive")
         
-        if path is None and url is None:
-            raise ValueError("Must specify either 'path' or 'url'")
+        if len(provided_args) == 0:
+            raise ValueError("Must specify either 'path', 'url', or 'blob'")
 
         # Get streaming results from the model
-        segments_generator = self.transcribe_core(path=path, url=url, language=language, diarize=diarize, verbose=verbose, **kwargs)
+        segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, verbose=verbose, **kwargs)
         
         if stream:
             # Return generator directly
@@ -101,6 +104,7 @@ class TranscriptionModel(ABC):
         *, 
         path: Optional[str] = None,
         url: Optional[str] = None,
+        blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
         verbose: bool = False,
@@ -110,8 +114,9 @@ class TranscriptionModel(ABC):
         Core transcription method that must be implemented by derived classes.
         
         Args:
-            path: Path to the audio file to transcribe (mutually exclusive with url)
-            url: URL to download and transcribe (mutually exclusive with path)
+            path: Path to the audio file to transcribe (mutually exclusive with url and blob)
+            url: URL to download and transcribe (mutually exclusive with path and blob)
+            blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
             language: Language code for transcription
             diarize: Whether to enable speaker diarization
             verbose: Whether to enable verbose output
@@ -142,11 +147,12 @@ def get_device_and_index(device: str) -> tuple[str, Optional[int]]:
 class FasterWhisperModel(TranscriptionModel):
     """Faster Whisper transcription model"""
     
-    def __init__(self, model: str, device: str = "auto"):
+    def __init__(self, model: str, device: str = None, local_files_only: bool = False):
         super().__init__(engine="faster-whisper", model=model)
         
         self.model_path = model
-        self.device = device
+        self.device = device if device else utils.guess_device()
+        self.local_files_only = local_files_only
         
         # Load the model immediately
         self.model_object = self._load_faster_whisper_model()
@@ -180,6 +186,8 @@ class FasterWhisperModel(TranscriptionModel):
         args = {'device': device}
         if device_index:
             args['device_index'] = device_index
+        if self.local_files_only:
+            args['local_files_only'] = self.local_files_only
         
         print(f'Loading faster-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return faster_whisper.WhisperModel(self.model_path, **args)
@@ -189,6 +197,7 @@ class FasterWhisperModel(TranscriptionModel):
         *, 
         path: Optional[str] = None,
         url: Optional[str] = None,
+        blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
         verbose: bool = False,
@@ -197,8 +206,8 @@ class FasterWhisperModel(TranscriptionModel):
         """
         Transcribe using faster-whisper engine.
         """
-        # Handle URL download if needed
-        audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
+        # Handle URL download or blob processing if needed
+        audio_path = utils.get_audio_file_path(path=path, url=url, blob=blob, verbose=verbose)
         
         if verbose:
             print(f"Using faster-whisper engine with model: {self.model}")
@@ -265,18 +274,20 @@ class FasterWhisperModel(TranscriptionModel):
             raise
         
         finally:
-            if url is not None and os.path.exists(audio_path):
+            # Clean up temporary files created for URL downloads or blob processing
+            if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
 
 
 class StableWhisperModel(TranscriptionModel):
     """Stable Whisper transcription model"""
     
-    def __init__(self, model: str, device: str = "auto"):
+    def __init__(self, model: str, device: str = None, local_files_only: bool = False):
         super().__init__(engine="stable-whisper", model=model)
         
         self.model_path = model
-        self.device = device
+        self.device = device if device else utils.guess_device()
+        self.local_files_only = local_files_only
         
         # Load the model immediately
         self.model_object = self._load_stable_whisper_model()
@@ -310,6 +321,8 @@ class StableWhisperModel(TranscriptionModel):
         args = {'device': device}
         if device_index:
             args['device_index'] = device_index
+        if self.local_files_only:
+            args['local_files_only'] = self.local_files_only
         
         print(f'Loading stable-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return stable_whisper.load_faster_whisper(self.model_path, **args)
@@ -319,6 +332,7 @@ class StableWhisperModel(TranscriptionModel):
         *, 
         path: Optional[str] = None,
         url: Optional[str] = None,
+        blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
         verbose: bool = False,
@@ -327,8 +341,8 @@ class StableWhisperModel(TranscriptionModel):
         """
         Transcribe using stable-whisper engine.
         """
-        # Handle URL download if needed
-        audio_path = get_audio_file_path(path=path, url=url, verbose=verbose)
+        # Handle URL download or blob processing if needed
+        audio_path = utils.get_audio_file_path(path=path, url=url, blob=blob, verbose=verbose)
         
         if verbose:
             print(f"Using stable-whisper engine with model: {self.model}")
@@ -393,7 +407,8 @@ class StableWhisperModel(TranscriptionModel):
             raise
         
         finally:
-            if url is not None and os.path.exists(audio_path):
+            # Clean up temporary files created for URL downloads or blob processing
+            if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
 
 class RunPodJob:
@@ -495,6 +510,7 @@ class RunPodModel(TranscriptionModel):
         *, 
         path: Optional[str] = None,
         url: Optional[str] = None,
+        blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
         verbose: bool = False,
@@ -510,8 +526,11 @@ class RunPodModel(TranscriptionModel):
         elif url is not None:
             payload_type = "url"
             data_source = url
+        elif blob is not None:
+            payload_type = "blob"
+            data_source = blob
         else:
-            raise ValueError("Must specify either 'path' or 'url'")
+            raise ValueError("Must specify either 'path', 'url', or 'blob'")
         
         if diarize:
             raise NotImplementedError("Diarization is not supported for RunPod engine")
@@ -527,18 +546,28 @@ class RunPodModel(TranscriptionModel):
                 "type": payload_type,
                 "model": self.model,
                 "engine": self.core_engine,
-                "streaming": True
+                "streaming": True,
+                "transcribe_args": {
+                    "language": language,
+                    "diarize": diarize,
+                    "verbose": verbose,
+                    **kwargs
+                }
             }
         }
         
         if payload_type == "blob":
-            # Read audio file and encode as base64
-            try:
-                with open(data_source, 'rb') as f:
-                    audio_data = f.read()
-                payload["input"]["data"] = base64.b64encode(audio_data).decode('utf-8')
-            except Exception as e:
-                raise Exception(f"Failed to read audio file: {e}")
+            if path is not None:
+                # Read audio file and encode as base64
+                try:
+                    with open(data_source, 'rb') as f:
+                        audio_data = f.read()
+                    payload["input"]["data"] = base64.b64encode(audio_data).decode('utf-8')
+                except Exception as e:
+                    raise Exception(f"Failed to read audio file: {e}")
+            else:
+                # Use blob data directly
+                payload["input"]["data"] = data_source
         else:
             payload["input"]["url"] = data_source
         
@@ -622,8 +651,8 @@ def load_model(
         engine: Transcription engine to use ('faster-whisper', 'stable-whisper', 'runpod', or 'stable-ts')
         model: Model name for the selected engine
         **kwargs: Additional arguments for specific engines:
-            - faster-whisper: device
-            - stable-whisper: device
+            - faster-whisper: device, local_files_only
+            - stable-whisper: device, local_files_only
             - runpod: api_key (required), endpoint_id (required), core_engine
             - stable-ts: (future implementation)
         
@@ -645,6 +674,3 @@ def load_model(
         raise NotImplementedError("stable-ts engine not yet implemented")
     else:
         raise ValueError(f"Unsupported engine: {engine}. Supported engines: 'faster-whisper', 'stable-whisper', 'runpod', 'stable-ts'")
-
-
-

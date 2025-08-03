@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import urllib.request
+import base64
 from typing import Optional
 
 import numpy as np
@@ -14,28 +15,33 @@ SAMPLE_RATE = 16000
 
 
 def get_audio_file_path(
-    path: Optional[str] = None, url: Optional[str] = None, verbose: bool = False
+    path: Optional[str] = None, 
+    url: Optional[str] = None, 
+    blob: Optional[str] = None,
+    verbose: bool = False
 ) -> str:
     """
     Get the audio file path.
-    Note: In case of url, the file is downloaded to a temporary file, which is not deleted automatically.
+    Note: In case of url or blob, the file is downloaded/saved to a temporary file, which is not deleted automatically.
     The caller is responsible for deleting the file after use.
 
     Args:
         path: Path to the audio file
         url: URL to the audio file
+        blob: Base64 encoded blob data
         verbose: Whether to print verbose output
 
     Returns:
         The audio file path
     """
-    # make sure that only one of path or url is provided
-    if path is not None and url is not None:
+    # make sure that only one of path, url, or blob is provided
+    provided_args = [arg for arg in [path, url, blob] if arg is not None]
+    if len(provided_args) > 1:
         raise ValueError(
-            "Cannot specify both 'path' and 'url' - they are mutually exclusive"
+            "Cannot specify multiple input sources - path, url, and blob are mutually exclusive"
         )
-    if path is None and url is None:
-        raise ValueError("Must specify either 'path' or 'url'")
+    if len(provided_args) == 0:
+        raise ValueError("Must specify either 'path', 'url', or 'blob'")
 
     audio_path = path
 
@@ -43,9 +49,23 @@ def get_audio_file_path(
         if verbose:
             print(f"Downloading audio from: {url}")
 
-        temp_file = tempfile.NamedTemporaryFile(suffix=".audio", delete=False, delete_on_close=False)
+        temp_file = tempfile.NamedTemporaryFile(suffix=".audio", delete=False)
         audio_path = temp_file.name
         urllib.request.urlretrieve(url, audio_path)
+
+    if blob is not None:
+        if verbose:
+            print("Processing blob data")
+
+        temp_file = tempfile.NamedTemporaryFile(suffix=".audio", delete=False)
+        audio_path = temp_file.name
+        
+        try:
+            blob_bytes = base64.b64decode(blob)
+            with open(audio_path, 'wb') as f:
+                f.write(blob_bytes)
+        except Exception as e:
+            raise ValueError(f"Failed to decode blob data: {e}")
 
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
@@ -94,3 +114,14 @@ def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray[np.float32]:
         raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
 
     return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
+
+def guess_device():
+    import torch
+
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available():
+        return 'mps'
+    else:
+        return 'cpu'
+
