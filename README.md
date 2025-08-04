@@ -60,6 +60,33 @@ for segment in model.transcribe(path="audio.mp3", stream=True):
         print(f"  {word['start']:.2f}s - {word['end']:.2f}s: '{word['word']}'")
 ```
 
+#### Async Transcription (RunPod Only)
+
+For RunPod models, you can use async transcription for better performance:
+
+```python
+import asyncio
+from ivrit.audio import load_model
+
+async def transcribe_async():
+    # Load RunPod model
+    model = load_model(
+        engine="runpod",
+        model="large-v3-turbo",
+        api_key="your-api-key",
+        endpoint_id="your-endpoint-id"
+    )
+    
+    # Stream results asynchronously
+    async for segment in model.transcribe_async(path="audio.mp3", language="he"):
+        print(f"{segment.start:.2f}s - {segment.end:.2f}s: {segment.text}")
+
+# Run the async function
+asyncio.run(transcribe_async())
+```
+
+**Note**: Async transcription is only available for RunPod models. The sync `transcribe()` method uses the original sync implementation.
+
 ## API Reference
 
 ### `load_model()`
@@ -82,7 +109,33 @@ Load a transcription model for the specified engine and model.
 - `ValueError`: If the engine is not supported
 - `ImportError`: If required dependencies are not installed
 
+### `transcribe()` and `transcribe_async()`
 
+Transcribe audio using the loaded model.
+
+#### Parameters
+
+- **path** (`str`, optional): Path to the audio file to transcribe
+- **url** (`str`, optional): URL to download and transcribe
+- **blob** (`str`, optional): Base64 encoded blob data to transcribe
+- **language** (`str`, optional): Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+- **stream** (`bool`, optional): Whether to return results as a generator (True) or full result (False) - only for `transcribe()`
+- **diarize** (`bool`, optional): Whether to enable speaker diarization
+- **verbose** (`bool`, optional): Whether to enable verbose output
+- **\*\*kwargs**: Additional keyword arguments for the transcription model
+
+#### Returns
+
+- `transcribe()`: If `stream=True`: Generator yielding transcription segments, If `stream=False`: Complete transcription result as dictionary
+- `transcribe_async()`: AsyncGenerator yielding transcription segments
+
+#### Raises
+
+- `ValueError`: If multiple input sources are provided, or none is provided
+- `FileNotFoundError`: If the specified path doesn't exist
+- `Exception`: For other transcription errors
+
+**Note**: `transcribe_async()` is only available for RunPod models and always returns an AsyncGenerator.
 
 ## Architecture
 

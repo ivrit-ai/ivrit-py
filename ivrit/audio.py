@@ -1,13 +1,16 @@
 """
 Audio transcription functionality for ivrit.ai
 """
+import asyncio
 import base64
 import json
+import jsonpickle
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Generator, Optional, Union
+from typing import Any, AsyncGenerator, Generator, Optional, Union
 
+import aiohttp
 import requests
 
 from . import utils
@@ -465,7 +468,14 @@ class RunPodJob:
                     break
 
                 for item in data['stream']:
-                    yield item['output']
+                    # Decode jsonpickle result
+                    output = item['output']
+                    try:
+                        decoded_output = jsonpickle.decode(output)
+                        yield decoded_output
+                    except Exception as e:
+                        # If jsonpickle decode fails, raise the exception
+                        raise Exception(f"Failed to decode jsonpickle: {e}")
 
                 if data['status'] == 'COMPLETED':
                     return
@@ -483,6 +493,91 @@ class RunPodJob:
         response.raise_for_status()
 
         return response.json()
+
+
+class AsyncRunPodJob:
+    """Async version of RunPodJob"""
+    
+    def __init__(self, api_key: str, endpoint_id: str, payload: dict):
+        self.api_key = api_key
+        self.endpoint_id = endpoint_id
+        self.base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        self.payload = payload
+        self.job_id = None
+
+    async def submit(self):
+        """Submit the job asynchronously"""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.base_url}/run",
+                headers=self.headers,
+                json=self.payload
+            ) as response:
+                if response.status == 401:
+                    raise Exception("Invalid RunPod API key")
+                
+                response.raise_for_status()
+                result = await response.json()
+                self.job_id = result.get("id")
+
+    async def status(self):
+        """Get job status asynchronously"""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.base_url}/status/{self.job_id}",
+                headers=self.headers
+            ) as response:
+                response.raise_for_status()
+                status_response = await response.json()
+                return status_response.get("status", "UNKNOWN")
+
+    async def stream(self):
+        """Stream job results asynchronously"""
+        while True:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/stream/{self.job_id}",
+                    headers=self.headers
+                ) as response:
+                    response.raise_for_status()
+                    
+                    # Expect a single response
+                    try:
+                        content = await response.text()
+                        data = json.loads(content)
+                        if data['status'] not in ['IN_PROGRESS', 'COMPLETED']:
+                            break
+
+                        for item in data['stream']:
+                            # Decode jsonpickle result
+                            output = item['output']
+                            try:
+                                decoded_output = jsonpickle.decode(output)
+                                yield decoded_output
+                            except Exception as e:
+                                # If jsonpickle decode fails, raise the exception
+                                raise Exception(f"Failed to decode jsonpickle: {e}")
+
+                        if data['status'] == 'COMPLETED':
+                            return
+
+                    except json.JSONDecodeError as e:
+                        print(f"Failed to parse JSON response: {e}")
+                        return
+
+    async def cancel(self):
+        """Cancel the job asynchronously"""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.base_url}/cancel/{self.job_id}",
+                headers=self.headers
+            ) as response:
+                response.raise_for_status()
+                return await response.json()
 
 
 class RunPodModel(TranscriptionModel):
@@ -562,14 +657,14 @@ class RunPodModel(TranscriptionModel):
                 try:
                     with open(data_source, 'rb') as f:
                         audio_data = f.read()
-                    payload["input"]["data"] = base64.b64encode(audio_data).decode('utf-8')
+                    payload["input"]["transcribe_args"]["blob"] = base64.b64encode(audio_data).decode('utf-8')
                 except Exception as e:
                     raise Exception(f"Failed to read audio file: {e}")
             else:
                 # Use blob data directly
-                payload["input"]["data"] = data_source
+                payload["input"]["transcribe_args"]["blob"] = data_source
         else:
-            payload["input"]["url"] = data_source
+            payload["input"]["transcribe_args"]["url"] = data_source
         
         # Check payload size
         if len(str(payload)) > self.RUNPOD_MAX_PAYLOAD_LEN:
@@ -596,33 +691,13 @@ class RunPodModel(TranscriptionModel):
         while True:
             try:
                 for segment_data in run_request.stream():
-                    if "error" in segment_data:
-                        raise Exception(f"RunPod error: {segment_data['error']}")
-                    
-                    # Extract segment information from well-formatted RunPod data
-                    text = segment_data["text"]
-                    start = segment_data["start"]
-                    end = segment_data["end"]
-                    
-                    # Build extra_data dictionary
-                    extra_data = {
-                        "runpod_segment": segment_data,
-                        "language": language or "unknown"
-                    }
-                    
-                    # Add any additional fields from the segment
-                    for key, value in segment_data.items():
-                        if key not in ["text", "start", "end"]:
-                            extra_data[key] = value
-                    
-                    yield Segment(
-                        text=text,
-                        start=start,
-                        end=end,
-                        extra_data=extra_data
-                    )
-                
+                    if isinstance(segment_data, Segment):
+                        yield segment_data
+                    else:
+                        raise Exception(f"RunPod error: {segment_data}")
+
                 # If we get here, streaming is complete
+                run_request = None
                 break
                 
             except requests.exceptions.ReadTimeout:
@@ -635,8 +710,156 @@ class RunPodModel(TranscriptionModel):
                 
             except Exception as e:
                 run_request.cancel()
+                run_request = None
                 raise Exception(f"Exception during RunPod streaming: {e}")
 
+            finally:
+                if run_request:
+                    run_request.cancel()
+
+    async def transcribe_async(
+        self,
+        *,
+        path: Optional[str] = None,
+        url: Optional[str] = None,
+        blob: Optional[str] = None,
+        language: Optional[str] = None,
+        diarize: bool = False,
+        verbose: bool = False,
+        **kwargs,
+    ) -> AsyncGenerator[Segment, None]:
+        """
+        Transcribe audio using this model asynchronously.
+        
+        Args:
+            path: Path to the audio file to transcribe (mutually exclusive with url and blob)
+            url: URL to download and transcribe (mutually exclusive with path and blob)
+            blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
+            language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+            diarize: Whether to enable speaker diarization  
+            verbose: Whether to enable verbose output
+            **kwargs: Additional keyword arguments for the transcription model.
+        Returns:
+            AsyncGenerator yielding transcription segments
+            
+        Raises:
+            ValueError: If multiple input sources are provided, or none is provided
+            FileNotFoundError: If the specified path doesn't exist
+            Exception: For other transcription errors
+        """
+        # Validate arguments
+        provided_args = [arg for arg in [path, url, blob] if arg is not None]
+        if len(provided_args) > 1:
+            raise ValueError("Cannot specify multiple input sources - path, url, and blob are mutually exclusive")
+        
+        if len(provided_args) == 0:
+            raise ValueError("Must specify either 'path', 'url', or 'blob'")
+
+        # Determine payload type and data
+        if path is not None:
+            payload_type = "blob"
+            data_source = path
+        elif url is not None:
+            payload_type = "url"
+            data_source = url
+        elif blob is not None:
+            payload_type = "blob"
+            data_source = blob
+        else:
+            raise ValueError("Must specify either 'path', 'url', or 'blob'")
+        
+        if diarize:
+            raise NotImplementedError("Diarization is not supported for RunPod engine")
+        
+        if verbose:
+            print(f"Using RunPod engine with model: {self.model}")
+            print(f"Payload type: {payload_type}")
+            print(f"Data source: {data_source}")
+        
+        # Prepare payload
+        payload = {
+            "input": {
+                "type": payload_type,
+                "model": self.model,
+                "engine": self.core_engine,
+                "streaming": True,
+                "transcribe_args": {
+                    "language": language,
+                    "diarize": diarize,
+                    "verbose": verbose,
+                    **kwargs
+                }
+            }
+        }
+        
+        if payload_type == "blob":
+            if path is not None:
+                # Read audio file and encode as base64
+                try:
+                    with open(data_source, 'rb') as f:
+                        audio_data = f.read()
+                    payload["input"]["transcribe_args"]["blob"] = base64.b64encode(audio_data).decode('utf-8')
+                except Exception as e:
+                    raise Exception(f"Failed to read audio file: {e}")
+            else:
+                # Use blob data directly
+                payload["input"]["transcribe_args"]["blob"] = data_source
+        else:
+            payload["input"]["transcribe_args"]["url"] = data_source
+        
+        # Check payload size
+        if len(str(payload)) > self.RUNPOD_MAX_PAYLOAD_LEN:
+            raise ValueError(f"Payload length is {len(str(payload))}, exceeding max payload length of {self.RUNPOD_MAX_PAYLOAD_LEN}")
+        
+        # Create and execute RunPod job
+        run_request = AsyncRunPodJob(self.api_key, self.endpoint_id, payload)
+        
+        # Submit the job
+        await run_request.submit()
+        
+        # Wait for task to be queued
+        if verbose:
+            print("Waiting for task to be queued...")
+        
+        for i in range(self.IN_QUEUE_TIMEOUT):
+            status = await run_request.status()
+            if status == "IN_QUEUE":
+                await asyncio.sleep(1)
+                continue
+            break
+        
+        if verbose:
+            print(f"Task status: {await run_request.status()}")
+        
+        # Collect streaming results
+        timeouts = 0
+        while True:
+            try:
+                async for segment_data in run_request.stream():
+                    if isinstance(segment_data, Segment):
+                        yield segment_data
+                    else:
+                        raise Exception(f"RunPod error: {segment_data}")
+
+                # If we get here, streaming is complete
+                run_request = None
+                break 
+            except aiohttp.ClientError as e:
+                timeouts += 1
+                if timeouts > self.MAX_STREAM_TIMEOUTS:
+                    raise Exception(f"Number of request.stream() timeouts exceeded the maximum ({self.MAX_STREAM_TIMEOUTS})")
+                if verbose:
+                    print(f"Stream timeout {timeouts}/{self.MAX_STREAM_TIMEOUTS}, retrying...")
+                continue
+                
+            except Exception as e:
+                await run_request.cancel()
+                run_request = None
+                raise Exception(f"Exception during RunPod streaming: {e}")
+
+            finally:
+                if run_request:
+                    await run_request.cancel()
 
 def load_model(
     *,
