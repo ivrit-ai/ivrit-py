@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ivrit"
-version = "0.0.8"
+version = "0.0.9"
 description = "ivrit.ai helper package"
 authors = [
   { name="Yair Lifshitz", email="yair@ivrit.ai" },
