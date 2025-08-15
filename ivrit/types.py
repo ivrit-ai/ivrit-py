@@ -21,3 +21,7 @@ class Segment:
     speakers: List[str] = field(default_factory=list)
     words: List[Word] = field(default_factory=list)
     extra_data: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Convert JSON word dictionaries to Word objects if needed"""
+        self.words = [Word(**word) for word in self.words]

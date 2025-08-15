@@ -502,8 +502,7 @@ class RunPodJob:
                     output = item['output']
                     try:
                         # Parse JSON and reconstruct Segment object
-                        segment_data = json.loads(output)
-                        decoded_output = Segment(**segment_data)
+                        decoded_output = Segment(**output)
                         yield decoded_output
                     except Exception as e:
                         # If JSON decode fails, raise the exception
@@ -660,9 +659,6 @@ class RunPodModel(TranscriptionModel):
             data_source = blob
         else:
             raise ValueError("Must specify either 'path', 'url', or 'blob'")
-        
-        if diarize:
-            raise NotImplementedError("Diarization is not supported for RunPod engine")
         
         if verbose:
             print(f"Using RunPod engine with model: {self.model}")
