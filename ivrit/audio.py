@@ -17,6 +17,37 @@ from . import utils
 from .types import Segment, Word
 
 
+def _copy_segment_extra_data(segment, language: Optional[str] = None) -> dict:
+    """
+    Copy extra data from a segment object, filtering out bound methods and other non-value attributes.
+    
+    Args:
+        segment: The segment object to extract data from
+        language: Optional language override
+    
+    Returns:
+        Dictionary containing the extra data
+    """
+    extra_data = {}
+    
+    # Add all segment attributes to extra_data, filtering out non-serializable attributes
+    for attr_name in dir(segment):
+        if not attr_name.startswith('_') and attr_name not in ['text', 'start', 'end', 'words']:
+            try:
+                attr_value = getattr(segment, attr_name)
+                # Test if the attribute is serializable by trying to convert to JSON
+                json.dumps(attr_value)
+                extra_data[attr_name] = attr_value
+            except (TypeError, ValueError):
+                # Skip non-serializable attributes
+                pass
+            except Exception:
+                # Skip attributes that can't be accessed
+                pass
+       
+    return extra_data
+
+
 class TranscriptionModel(ABC):
     """Base class for transcription models"""
     
@@ -240,22 +271,7 @@ class FasterWhisperModel(TranscriptionModel):
             # Yield each segment with proper structure
             for segment in segments:
                 # Build extra_data dictionary
-                extra_data = {
-                    "info": {
-                        "language": info.language,
-                        "language_probability": info.language_probability
-                    }
-                }
-                
-                # Add all segment attributes to extra_data
-                for attr_name in dir(segment):
-                    if not attr_name.startswith('_') and attr_name not in ['text', 'start', 'end', 'words']:
-                        try:
-                            attr_value = getattr(segment, attr_name)
-                            extra_data[attr_name] = attr_value
-                        except Exception:
-                            # Skip attributes that can't be accessed
-                            pass
+                extra_data = _copy_segment_extra_data(segment, language=language)
                 
                 # Process words if available
                 words = []
@@ -389,19 +405,7 @@ class StableWhisperModel(TranscriptionModel):
             # Yield each segment with proper structure
             for segment in segments:
                 # Build extra_data dictionary
-                extra_data = {
-                    "language": language or "unknown"
-                }
-                
-                # Add all segment attributes to extra_data
-                for attr_name in dir(segment):
-                    if not attr_name.startswith('_') and attr_name not in ['text', 'start', 'end', 'words']:
-                        try:
-                            attr_value = getattr(segment, attr_name)
-                            extra_data[attr_name] = attr_value
-                        except Exception:
-                            # Skip attributes that can't be accessed
-                            pass
+                extra_data = _copy_segment_extra_data(segment, language=language)
                 
                 # Process words if available
                 words = []
