@@ -4,17 +4,17 @@ Audio transcription functionality for ivrit.ai
 import asyncio
 import base64
 import json
-import jsonpickle
 import os
 import time
 from abc import ABC, abstractmethod
+from dataclasses import asdict
 from typing import Any, AsyncGenerator, Generator, Optional, Union
 
 import aiohttp
 import requests
 
 from . import utils
-from .types import Segment
+from .types import Segment, Word
 
 
 class TranscriptionModel(ABC):
@@ -235,7 +235,7 @@ class FasterWhisperModel(TranscriptionModel):
             )
         try:
             # Transcribe using faster-whisper directly with file path
-            segments, info = self.model_object.transcribe(audio_path, language=language)
+            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=True)
             
             # Yield each segment with proper structure
             for segment in segments:
@@ -249,7 +249,7 @@ class FasterWhisperModel(TranscriptionModel):
                 
                 # Add all segment attributes to extra_data
                 for attr_name in dir(segment):
-                    if not attr_name.startswith('_') and attr_name not in ['text', 'start', 'end']:
+                    if not attr_name.startswith('_') and attr_name not in ['text', 'start', 'end', 'words']:
                         try:
                             attr_value = getattr(segment, attr_name)
                             extra_data[attr_name] = attr_value
@@ -257,11 +257,24 @@ class FasterWhisperModel(TranscriptionModel):
                             # Skip attributes that can't be accessed
                             pass
                 
+                # Process words if available
+                words = []
+                if hasattr(segment, 'words') and segment.words:
+                    for word_data in segment.words:
+                        word = Word(
+                            word=word_data.word,
+                            start=word_data.start,
+                            end=word_data.end,
+                            probability=getattr(word_data, 'probability', None)
+                        )
+                        words.append(word)
+                
                 # Create Segment object
                 segment = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
+                    words=words,
                     extra_data=extra_data
                 )
 
@@ -382,7 +395,7 @@ class StableWhisperModel(TranscriptionModel):
                 
                 # Add all segment attributes to extra_data
                 for attr_name in dir(segment):
-                    if not attr_name.startswith('_') and attr_name not in ['text', 'start', 'end']:
+                    if not attr_name.startswith('_') and attr_name not in ['text', 'start', 'end', 'words']:
                         try:
                             attr_value = getattr(segment, attr_name)
                             extra_data[attr_name] = attr_value
@@ -390,11 +403,24 @@ class StableWhisperModel(TranscriptionModel):
                             # Skip attributes that can't be accessed
                             pass
                 
+                # Process words if available
+                words = []
+                if hasattr(segment, 'words') and segment.words:
+                    for word_data in segment.words:
+                        word = Word(
+                            word=word_data.word,
+                            start=word_data.start,
+                            end=word_data.end,
+                            probability=getattr(word_data, 'probability', None)
+                        )
+                        words.append(word)
+                
                 # Create Segment object
                 segment = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
+                    words=words,
                     extra_data=extra_data
                 )
 
@@ -468,14 +494,16 @@ class RunPodJob:
                     break
 
                 for item in data['stream']:
-                    # Decode jsonpickle result
+                    # Decode JSON result
                     output = item['output']
                     try:
-                        decoded_output = jsonpickle.decode(output)
+                        # Parse JSON and reconstruct Segment object
+                        segment_data = json.loads(output)
+                        decoded_output = Segment(**segment_data)
                         yield decoded_output
                     except Exception as e:
-                        # If jsonpickle decode fails, raise the exception
-                        raise Exception(f"Failed to decode jsonpickle: {e}")
+                        # If JSON decode fails, raise the exception
+                        raise Exception(f"Failed to decode JSON: {e}")
 
                 if data['status'] == 'COMPLETED':
                     return
@@ -553,14 +581,16 @@ class AsyncRunPodJob:
                             break
 
                         for item in data['stream']:
-                            # Decode jsonpickle result
+                            # Decode JSON result
                             output = item['output']
                             try:
-                                decoded_output = jsonpickle.decode(output)
+                                # Parse JSON and reconstruct Segment object
+                                segment_data = json.loads(output)
+                                decoded_output = Segment(**segment_data)
                                 yield decoded_output
                             except Exception as e:
-                                # If jsonpickle decode fails, raise the exception
-                                raise Exception(f"Failed to decode jsonpickle: {e}")
+                                # If JSON decode fails, raise the exception
+                                raise Exception(f"Failed to decode JSON: {e}")
 
                         if data['status'] == 'COMPLETED':
                             return

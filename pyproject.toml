@@ -30,7 +30,6 @@ classifiers = [
 dependencies = [
     "aiohttp>=3.8.0",
     "faster-whisper>=1.1.1",
-    "jsonpickle>=3.0.0",
     "numpy>=1.20.0",
     "pyannote-audio>=3.3.2",
     "requests>=2.32.3",
