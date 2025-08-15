@@ -16,7 +16,7 @@ from pyannote.audio import Pipeline
 from .types import Segment
 from .utils import SAMPLE_RATE, load_audio
 
-DEFAULT_DIARIZATION_CHECKPOINT = "pyannote/speaker-diarization-3.1"
+DEFAULT_DIARIZATION_CHECKPOINT = "ivrit-ai/pyannote-speaker-diarization-3.1"
 
 
 def match_speaker_to_interval(
