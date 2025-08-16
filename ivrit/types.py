@@ -24,4 +24,5 @@ class Segment:
     
     def __post_init__(self):
         """Convert JSON word dictionaries to Word objects if needed"""
-        self.words = [Word(**word) for word in self.words]
+        if self.words and isinstance(self.words[0], dict):
+            self.words = [Word(**word) for word in self.words]
