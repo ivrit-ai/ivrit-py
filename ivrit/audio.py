@@ -6,9 +6,11 @@ import base64
 import json
 import os
 import time
+import io
+import wave
 from abc import ABC, abstractmethod
-from dataclasses import asdict
-from typing import Any, AsyncGenerator, Generator, Optional, Union
+from typing import Any, AsyncGenerator, Generator, Optional, Union, List, Dict
+from uuid import uuid4
 
 import aiohttp
 import requests
@@ -48,6 +50,87 @@ def _copy_segment_extra_data(segment, language: Optional[str] = None) -> dict:
     return extra_data
 
 
+class TranscriptionSession(ABC):
+    """
+    Abstract base class for incremental transcription sessions.
+    
+    A session maintains state for incremental audio processing, allowing users
+    to add audio frames and get new segments with confidence scores.
+    """
+    
+    def __init__(self, session_id: str, model: 'TranscriptionModel'):
+        """
+        Initialize a transcription session.
+        
+        Args:
+            session_id: Unique identifier for this session
+            model: The transcription model to use
+        """
+        self.session_id = session_id
+        self.model = model
+    
+    @abstractmethod
+    def append(self, audio_bytes: bytes) -> None:
+        """
+        Add audio to the session and update internal state. Does not return segments.
+
+        The input should be raw mono 16-bit PCM bytes (s16le) at the session's sample_rate.
+
+        Args:
+            audio_bytes: Audio payload as raw PCM s16le bytes
+        """
+        pass
+    
+    @abstractmethod
+    def get_all_segments(self) -> List[Segment]:
+        """
+        Get all segments accumulated in this session.
+        
+        Returns:
+            List of all segments in the session
+        """
+        pass
+    
+    @abstractmethod
+    def get_full_text(self) -> str:
+        """
+        Get the full transcribed text from all segments.
+        
+        Returns:
+            Combined text from all segments
+        """
+        pass
+    
+    @abstractmethod
+    def get_session_info(self) -> Dict[str, Any]:
+        """
+        Get information about this session.
+        
+        Returns:
+            Dictionary containing session metadata
+        """
+        pass
+    
+    @abstractmethod
+    def reset(self):
+        """Reset the session buffer and clear all state."""
+        pass
+    
+    @abstractmethod
+    def flush(self) -> List[Segment]:
+        """
+        Flush the session and return any remaining segments including the final one.
+        
+        This method should be called at the end of audio processing to get the
+        final segment(s) that may not have been returned by append() due to
+        confidence filtering.
+        
+        Returns:
+            List of remaining segments including the final one
+        """
+        pass
+
+
 class TranscriptionModel(ABC):
     """Base class for transcription models"""
     
@@ -59,6 +142,26 @@ class TranscriptionModel(ABC):
     def __repr__(self):
         return f"{self.__class__.__name__}(engine='{self.engine}', model='{self.model}')"
     
+    def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
+                      verbose: bool = False) -> TranscriptionSession:
+        """
+        Create a new transcription session for incremental audio processing.
+        
+        Args:
+            language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+            sample_rate: Audio sample rate (default: 16000 Hz)
+            verbose: Whether to enable verbose output
+            
+        Returns:
+            TranscriptionSession object for incremental transcription
+            
+        Raises:
+            NotImplementedError: If the model doesn't support session-based transcription
+        """
+        raise NotImplementedError(f"Session-based transcription is not supported for {self.engine} engine. "
+                                f"Only some specific models support sessions.")
+    
+
     
     def transcribe(
         self,
@@ -178,6 +281,232 @@ def get_device_and_index(device: str) -> tuple[str, Optional[int]]:
         return device, None
 
 
+class WhisperSession(TranscriptionSession):
+    """
+    Concrete session implementation for transcription models.
+    
+    Manages incremental audio processing with confidence tracking for whisper-based engines.
+    """
+    
+    def __init__(self, session_id: str, model: TranscriptionModel, language: Optional[str] = None, 
+                 sample_rate: int = 16000, verbose: bool = True):
+        """
+        Initialize a whisper transcription session.
+        
+        Args:
+            session_id: Unique identifier for this session
+            model: The TranscriptionModel to use
+            language: Language code for transcription
+            sample_rate: Audio sample rate (default: 16000 Hz)
+            verbose: Whether to enable verbose output
+        """
+        super().__init__(session_id, model)
+        self.language = language
+        self.sample_rate = sample_rate
+        self.verbose = verbose
+        
+        # Audio buffer for incremental processing (raw PCM s16le bytes)
+        self.pcm_bytes_buffer = bytearray()
+        
+        # Track accumulated segments
+        self.accumulated_segments: List[Segment] = []
+        
+        # Session metadata
+        self.total_frames_added = 0
+        self.total_duration = 0.0
+    
+    def append(self, audio_bytes: bytes) -> None:
+        """
+        Add audio to the session and update internal state. Does not return segments.
+
+        Accepts raw mono 16-bit PCM bytes (s16le) at the session's sample_rate.
+        """
+        if not audio_bytes:
+            return
+
+        # Validate PCM s16le input
+        if len(audio_bytes) % 2 != 0:
+            raise ValueError("PCM bytes length must be even (16-bit samples)")
+        
+        # Add raw PCM s16le to buffer
+        self.pcm_bytes_buffer.extend(audio_bytes)
+        self.total_frames_added += len(audio_bytes) // 2
+        
+        # Update duration
+        self.total_duration = len(self.pcm_bytes_buffer) / (2 * self.sample_rate)
+
+        if self.verbose:
+            print(
+                f"Session {self.session_id}: Added {len(audio_bytes)} bytes, "
+                f"total duration: {self.total_duration:.2f}s"
+            )
+
+        # Process buffer to extract any complete segments and accumulate them
+        complete_segments = self._transcribe_buffered(flush=False)
+        if complete_segments:
+            self.accumulated_segments.extend(complete_segments)
+            if self.verbose:
+                print(
+                    f"Session {self.session_id}: Found {len(complete_segments)} complete segments"
+                )
+    
+    def get_all_segments(self) -> List[Segment]:
+        """
+        Get all segments accumulated in this session.
+        
+        Returns:
+            List of all segments in the session
+        """
+        return self.accumulated_segments.copy()
+    
+    def get_full_text(self) -> str:
+        """
+        Get the full transcribed text from all segments.
+        
+        Returns:
+            Combined text from all segments
+        """
+        return " ".join(segment.text for segment in self.accumulated_segments)
+    
+    def get_session_info(self) -> Dict[str, Any]:
+        """
+        Get information about this session.
+        
+        Returns:
+            Dictionary containing session metadata
+        """
+        return {
+            "session_id": self.session_id,
+            "total_frames": self.total_frames_added,
+            "total_duration": self.total_duration,
+            "total_segments": len(self.accumulated_segments),
+            "sample_rate": self.sample_rate,
+            "language": self.language,
+            "engine": self.model.engine,
+            "model": self.model.model
+        }
+    
+    def reset(self):
+        """Reset the session buffer and clear all state."""
+        self.pcm_bytes_buffer = bytearray()
+        self.accumulated_segments = []
+        self.total_frames_added = 0
+        self.total_duration = 0.0
+        
+        if self.verbose:
+            print(f"Session {self.session_id}: Reset")
+    
+    def flush(self) -> List[Segment]:
+        """
+        Flush the session and return any remaining segments including the final one.
+        
+        This method should be called at the end of audio processing to get the
+        final segment(s) that may not have been returned by append() due to
+        confidence filtering.
+        
+        Returns:
+            List of remaining segments including the final one
+        """
+        if len(self.pcm_bytes_buffer) == 0:
+            return []
+        
+        # Get any remaining segments (handles buffer clearing internally)
+        remaining_segments = self._transcribe_buffered(flush=True)
+        
+        # Add remaining segments to accumulated and return them
+        if remaining_segments:
+            self.accumulated_segments.extend(remaining_segments)
+            
+            if self.verbose:
+                print(f"Session {self.session_id}: Flushed {len(remaining_segments)} final segments")
+            
+            return remaining_segments
+        
+        return []
+    
+    def _transcribe_buffered(self, flush: bool = False) -> List[Segment]:
+        """
+        Transcribe the current audio buffer using the model and handle buffer trimming.
+        
+        Uses the model's transcribe_core method to get Segment objects without looking
+        at model internals, providing a unified implementation across all model types.
+        
+        Args:
+            flush: If True, return all segments and clear the buffer.
+                   If False, return complete segments and trim the buffer.
+        
+        Returns:
+            List of transcription segments based on flush parameter
+        """
+        if len(self.pcm_bytes_buffer) == 0:
+            return []
+        
+        # Skip if buffer is too short (less than 0.5 seconds), unless flushing
+        min_bytes = int(0.5 * self.sample_rate) * 2  # 16-bit mono => 2 bytes per sample
+        if not flush and len(self.pcm_bytes_buffer) < min_bytes:
+            return []
+        
+        # Create in-memory WAV buffer from raw PCM bytes
+        wav_buffer = io.BytesIO()
+        
+        try:
+            # Create WAV data in memory
+            with wave.open(wav_buffer, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(bytes(self.pcm_bytes_buffer))
+            
+            # Get WAV bytes and convert to base64 blob for all models
+            # This eliminates temporary file creation and uses utils.get_audio_file_path blob handling
+            wav_bytes = wav_buffer.getvalue()
+            import base64
+            wav_blob = base64.b64encode(wav_bytes).decode('utf-8')
+            
+            # Use the model's transcribe_core method with blob for all model types
+            # This works uniformly since all models support blob via utils.get_audio_file_path
+            all_segments = list(self.model.transcribe_core(
+                blob=wav_blob,
+                language=self.language,
+                verbose=self.verbose
+            ))
+            
+            # Handle buffer trimming and segment filtering based on flush parameter
+            if flush:
+                # When flushing, clear the buffer and return all segments
+                self.pcm_bytes_buffer = bytearray()
+                return all_segments
+            else:
+                # For regular processing, return complete segments and trim buffer
+                if len(all_segments) > 1:
+                    # All segments except the last are considered complete/high-confidence
+                    complete_segments = all_segments[:-1]
+                    
+                    # Trim the buffer: remove audio up to the end of the last complete segment
+                    last_complete_end_time = complete_segments[-1].end
+                    samples_to_remove = int(last_complete_end_time * self.sample_rate)
+                    bytes_to_remove = samples_to_remove * 2
+                    
+                    if bytes_to_remove > 0 and bytes_to_remove < len(self.pcm_bytes_buffer):
+                        self.pcm_bytes_buffer = self.pcm_bytes_buffer[bytes_to_remove:]
+                        
+                        if self.verbose:
+                            print(f"Session {self.session_id}: Trimmed {samples_to_remove} samples ({last_complete_end_time:.2f}s)")
+                    
+                    return complete_segments
+                else:
+                    # No complete segments yet (0 or 1 segments)
+                    return []
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"Error during session buffer transcription: {e}")
+            return []
+        finally:
+            # Close the WAV buffer
+            wav_buffer.close()
+
+
 class FasterWhisperModel(TranscriptionModel):
     """Faster Whisper transcription model"""
     
@@ -226,6 +555,33 @@ class FasterWhisperModel(TranscriptionModel):
         print(f'Loading faster-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return faster_whisper.WhisperModel(self.model_path, **args)
     
+    def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
+                      verbose: bool = False) -> TranscriptionSession:
+        """
+        Create a new transcription session for incremental audio processing.
+        
+        Args:
+            language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+            sample_rate: Audio sample rate (default: 16000 Hz)
+            verbose: Whether to enable verbose output
+            
+        Returns:
+            WhisperSession object for incremental transcription
+        """
+        session_id = str(uuid4())
+        session = WhisperSession(
+            session_id=session_id,
+            model=self,
+            language=language,
+            sample_rate=sample_rate,
+            verbose=verbose
+        )
+        
+        if verbose:
+            print(f"Created FasterWhisper transcription session: {session_id}")
+        
+        return session
+
     def transcribe_core(
         self, 
         *, 
@@ -309,6 +665,8 @@ class FasterWhisperModel(TranscriptionModel):
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
+    
+
 
 
 class StableWhisperModel(TranscriptionModel):
@@ -359,6 +717,33 @@ class StableWhisperModel(TranscriptionModel):
         print(f'Loading stable-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return stable_whisper.load_faster_whisper(self.model_path, **args)
     
+    def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
+                      verbose: bool = False) -> TranscriptionSession:
+        """
+        Create a new transcription session for incremental audio processing.
+        
+        Args:
+            language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+            sample_rate: Audio sample rate (default: 16000 Hz)
+            verbose: Whether to enable verbose output
+            
+        Returns:
+            WhisperSession object for incremental transcription
+        """
+        session_id = str(uuid4())
+        session = WhisperSession(
+            session_id=session_id,
+            model=self,
+            language=language,
+            sample_rate=sample_rate,
+            verbose=verbose
+        )
+        
+        if verbose:
+            print(f"Created StableWhisper transcription session: {session_id}")
+        
+        return session
+
     def transcribe_core(
         self, 
         *, 
@@ -443,6 +828,8 @@ class StableWhisperModel(TranscriptionModel):
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
+    
+
 
 class RunPodJob:
     def __init__(self, api_key: str, endpoint_id: str, payload: dict):
@@ -633,6 +1020,38 @@ class RunPodModel(TranscriptionModel):
         self.MAX_STREAM_TIMEOUTS = 5
         self.RUNPOD_MAX_PAYLOAD_LEN = 10 * 1024 * 1024
     
+    def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
+                      verbose: bool = False) -> TranscriptionSession:
+        """
+        Create a new transcription session for incremental audio processing.
+        
+        Note: RunPod sessions have limited functionality since they rely on remote API calls.
+        The session will accumulate audio but cannot perform true incremental transcription
+        until flush() is called.
+        
+        Args:
+            language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+            sample_rate: Audio sample rate (default: 16000 Hz)
+            verbose: Whether to enable verbose output
+            
+        Returns:
+            WhisperSession object for incremental transcription
+        """
+        session_id = str(uuid4())
+        session = WhisperSession(
+            session_id=session_id,
+            model=self,
+            language=language,
+            sample_rate=sample_rate,
+            verbose=verbose
+        )
+        
+        if verbose:
+            print(f"Created RunPod transcription session: {session_id}")
+            print("Note: RunPod sessions buffer audio locally and transcribe on flush()")
+        
+        return session
+
     def transcribe_core(
         self, 
         *, 
@@ -890,6 +1309,8 @@ class RunPodModel(TranscriptionModel):
             finally:
                 if run_request:
                     await run_request.cancel()
+    
+
 
 def load_model(
     *,
