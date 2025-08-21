@@ -2,7 +2,8 @@
 ivrit - Python package providing wrappers around ivrit.ai's capabilities
 """
 
-__version__ = '0.0.1'
+from importlib.metadata import version, PackageNotFoundError
+__version__ = version("ivrit")
 
 from .audio import load_model, TranscriptionModel, TranscriptionSession, FasterWhisperModel, StableWhisperModel, RunPodModel
 from .types import Segment
