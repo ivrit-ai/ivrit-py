@@ -47,15 +47,15 @@ class TestSessionTranscription:
             verbose=True
         )
         
-        # Convert audio file to WAV format for session processing
+        # Convert audio file to raw PCM s16le format for session processing
         try:
-            # Use ffmpeg to convert to WAV format (mono, 16-bit, 16kHz)
+            # Use ffmpeg to convert to raw PCM s16le format (mono, 16-bit, 16kHz)
             cmd = [
-                "ffmpeg", "-i", audio_file_path, "-f", "wav", 
+                "ffmpeg", "-i", audio_file_path, "-f", "s16le", 
                 "-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000", "-"
             ]
             result = subprocess.run(cmd, capture_output=True, check=True)
-            wav_bytes = result.stdout
+            audio_data = result.stdout
         except (subprocess.CalledProcessError, FileNotFoundError):
             pytest.skip("ffmpeg not available for audio conversion")
         
@@ -64,13 +64,6 @@ class TestSessionTranscription:
         bytes_per_second = 16000 * 2  # 32000 bytes per second
         target_chunk_duration = 10  # seconds
         chunk_size = bytes_per_second * target_chunk_duration
-        
-        # Skip WAV header (find data chunk)
-        wav_data_start = wav_bytes.find(b'data') + 8  # Skip 'data' + 4-byte size
-        if wav_data_start < 8:
-            wav_data_start = 44  # Standard WAV header size fallback
-        
-        audio_data = wav_bytes[wav_data_start:]
         
         # Process audio in chunks
         num_chunks = len(audio_data) // chunk_size + (1 if len(audio_data) % chunk_size else 0)

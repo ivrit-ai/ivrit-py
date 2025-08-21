@@ -74,12 +74,10 @@ class TranscriptionSession(ABC):
         """
         Add audio to the session and update internal state. Does not return segments.
 
-        The input should be either:
-        - A WAV byte stream (RIFF/WAVE) of mono 16-bit PCM at the session's sample_rate, or
-        - Raw mono 16-bit PCM bytes (s16le) at the session's sample_rate.
+        The input should be raw mono 16-bit PCM bytes (s16le) at the session's sample_rate.
 
         Args:
-            audio_bytes: Audio payload as bytes (WAV or raw PCM s16le)
+            audio_bytes: Audio payload as raw PCM s16le bytes
         """
         pass
     
@@ -321,37 +319,21 @@ class WhisperSession(TranscriptionSession):
         """
         Add audio to the session and update internal state. Does not return segments.
 
-        Accepts either WAV bytes (RIFF/WAVE, mono, 16-bit PCM, matching sample_rate)
-        or raw mono 16-bit PCM bytes (s16le) at the session's sample_rate.
+        Accepts raw mono 16-bit PCM bytes (s16le) at the session's sample_rate.
         """
         if not audio_bytes:
             return
 
-        # Try to parse as WAV; if not RIFF/WAVE, treat as raw PCM s16le
-        try:
-            if audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE":
-                with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
-                    if wf.getnchannels() != 1:
-                        raise ValueError("WAV must be mono (1 channel)")
-                    if wf.getsampwidth() != 2:
-                        raise ValueError("WAV must be 16-bit PCM (sampwidth=2)")
-                    if wf.getframerate() != self.sample_rate:
-                        raise ValueError(
-                            f"WAV sample rate {wf.getframerate()} does not match session sample rate {self.sample_rate}"
-                        )
-                    num_frames = wf.getnframes()
-                    frames_bytes = wf.readframes(num_frames)
-                    self.pcm_bytes_buffer.extend(frames_bytes)
-                    self.total_frames_added += num_frames
-            else:
-                # Treat as raw PCM s16le
-                if len(audio_bytes) % 2 != 0:
-                    raise ValueError("Raw PCM bytes length must be even (16-bit samples)")
-                self.pcm_bytes_buffer.extend(audio_bytes)
-                self.total_frames_added += len(audio_bytes) // 2
-        finally:
-            # Update duration regardless of branch
-            self.total_duration = len(self.pcm_bytes_buffer) / (2 * self.sample_rate)
+        # Validate PCM s16le input
+        if len(audio_bytes) % 2 != 0:
+            raise ValueError("PCM bytes length must be even (16-bit samples)")
+        
+        # Add raw PCM s16le to buffer
+        self.pcm_bytes_buffer.extend(audio_bytes)
+        self.total_frames_added += len(audio_bytes) // 2
+        
+        # Update duration
+        self.total_duration = len(self.pcm_bytes_buffer) / (2 * self.sample_rate)
 
         if self.verbose:
             print(
