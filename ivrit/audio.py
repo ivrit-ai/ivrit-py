@@ -975,7 +975,7 @@ class AsyncRunPodJob:
                             output = item['output']
                             try:
                                 # Parse JSON and reconstruct Segment object
-                                decoded_output = Segment(**segment_data)
+                                decoded_output = Segment(**output)
                                 yield decoded_output
                             except Exception as e:
                                 # If JSON decode fails, raise the exception
