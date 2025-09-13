@@ -172,6 +172,7 @@ class TranscriptionModel(ABC):
         language: Optional[str] = None,
         stream: bool = False,
         diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Union[dict, Generator]:
@@ -185,6 +186,7 @@ class TranscriptionModel(ABC):
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
             diarize: Whether to enable speaker diarization  
+            diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
             verbose: Whether to enable verbose output
             **kwargs: Additional keyword arguments for the transcription model.
         Returns:
@@ -204,8 +206,12 @@ class TranscriptionModel(ABC):
         if len(provided_args) == 0:
             raise ValueError("Must specify either 'path', 'url', or 'blob'")
 
+        # Validate streaming with diarization
+        if stream and diarize:
+            raise ValueError("Streaming (stream=True) is not compatible with diarization (diarize=True). Diarization requires processing all segments before speaker assignment.")
+
         # Get streaming results from the model
-        segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, verbose=verbose, **kwargs)
+        segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, diarization_args=diarization_args, verbose=verbose, **kwargs)
         
         if stream:
             # Return generator directly
@@ -244,6 +250,7 @@ class TranscriptionModel(ABC):
         blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -256,6 +263,7 @@ class TranscriptionModel(ABC):
             blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
             language: Language code for transcription
             diarize: Whether to enable speaker diarization
+            diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
             verbose: Whether to enable verbose output
             **kwargs: Additional keyword arguments for the transcription model.
             
@@ -590,6 +598,7 @@ class FasterWhisperModel(TranscriptionModel):
         blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -607,24 +616,13 @@ class FasterWhisperModel(TranscriptionModel):
             if diarize:
                 print("Diarization is enabled")
         
-        if diarize:
-            from .diarization import diarize as diarize_func, match_speaker_to_interval
-            
-            diarizition_df = diarize_func(
-                audio=audio_path,
-                device=self.device,
-                checkpoint_path=kwargs.get("checkpoint_path", None),
-                num_speakers=kwargs.get("num_speakers", None),
-                min_speakers=kwargs.get("min_speakers", None),
-                max_speakers=kwargs.get("max_speakers", None),
-                use_auth_token=kwargs.get("use_auth_token", None),
-                verbose=verbose,
-            )
         try:
             # Transcribe using faster-whisper directly with file path
             segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=True)
             
-            # Yield each segment with proper structure
+            # Collect segments for diarization if needed
+            all_segments = [] if diarize else None
+            
             for segment in segments:
                 # Build extra_data dictionary
                 extra_data = _copy_segment_extra_data(segment, language=language)
@@ -642,19 +640,38 @@ class FasterWhisperModel(TranscriptionModel):
                         words.append(word)
                 
                 # Create Segment object
-                segment = Segment(
+                segment_obj = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
                     words=words,
                     extra_data=extra_data
                 )
-
-                if diarize:
-                    speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
-                    segment.speakers = [speaker]
                 
-                yield segment
+                if diarize:
+                    all_segments.append(segment_obj)
+                else:
+                    yield segment_obj
+            
+            # Apply diarization if requested
+            if diarize:
+                from .diarization import diarize as diarize_func
+                
+                # Copy user diarization arguments and set defaults
+                diar_kwargs = (diarization_args or {}).copy()
+                diar_kwargs.setdefault("engine", "ivrit")
+                diar_kwargs.setdefault("device", self.device)
+                
+                all_segments = diarize_func(
+                    audio=audio_path,
+                    transcription_segments=all_segments,
+                    verbose=verbose,
+                    **diar_kwargs
+                )
+                
+                # Yield all segments
+                for segment in all_segments:
+                    yield segment
                 
         except Exception as e:
             if verbose:
@@ -752,6 +769,7 @@ class StableWhisperModel(TranscriptionModel):
         blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -769,25 +787,14 @@ class StableWhisperModel(TranscriptionModel):
             if diarize:
                 print("Diarization is enabled")
         
-        if diarize:
-            from .diarization import diarize as diarize_func, match_speaker_to_interval
-            
-            diarizition_df = diarize_func(
-                audio=audio_path,
-                device=self.device,
-                checkpoint_path=kwargs.get("checkpoint_path", None),
-                num_speakers=kwargs.get("num_speakers", None),
-                min_speakers=kwargs.get("min_speakers", None),
-                max_speakers=kwargs.get("max_speakers", None),
-                use_auth_token=kwargs.get("use_auth_token", None),
-                verbose=verbose,
-            )   
         try:
             # Transcribe using stable-whisper with word timestamps
             result = self.model_object.transcribe(audio_path, language=language, word_timestamps=True)
             segments = result.segments
             
-            # Yield each segment with proper structure
+            # Collect segments for diarization if needed
+            all_segments = [] if diarize else None
+            
             for segment in segments:
                 # Build extra_data dictionary
                 extra_data = _copy_segment_extra_data(segment, language=language)
@@ -805,19 +812,38 @@ class StableWhisperModel(TranscriptionModel):
                         words.append(word)
                 
                 # Create Segment object
-                segment = Segment(
+                segment_obj = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
                     words=words,
                     extra_data=extra_data
                 )
-
-                if diarize:
-                    speaker = match_speaker_to_interval(diarizition_df, start=segment.start, end=segment.end)
-                    segment.speakers = [speaker]
                 
-                yield segment
+                if diarize:
+                    all_segments.append(segment_obj)
+                else:
+                    yield segment_obj
+            
+            # Apply diarization if requested
+            if diarize:
+                from .diarization import diarize as diarize_func
+                
+                # Copy user diarization arguments and set defaults
+                diar_kwargs = (diarization_args or {}).copy()
+                diar_kwargs.setdefault("engine", "ivrit")
+                diar_kwargs.setdefault("device", self.device)
+                
+                all_segments = diarize_func(
+                    audio=audio_path,
+                    transcription_segments=all_segments,
+                    verbose=verbose,
+                    **diar_kwargs
+                )
+                
+                # Yield all segments
+                for segment in all_segments:
+                    yield segment
                 
         except Exception as e:
             if verbose:
@@ -1059,6 +1085,7 @@ class RunPodModel(TranscriptionModel):
         blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -1173,6 +1200,7 @@ class RunPodModel(TranscriptionModel):
         blob: Optional[str] = None,
         language: Optional[str] = None,
         diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> AsyncGenerator[Segment, None]:
@@ -1185,6 +1213,7 @@ class RunPodModel(TranscriptionModel):
             blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             diarize: Whether to enable speaker diarization  
+            diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
             verbose: Whether to enable verbose output
             **kwargs: Additional keyword arguments for the transcription model.
         Returns:
