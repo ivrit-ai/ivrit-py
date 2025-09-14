@@ -1120,6 +1120,7 @@ class RunPodModel(TranscriptionModel):
                 "transcribe_args": {
                     "language": language,
                     "diarize": diarize,
+                    "diarization_args": diarization_args,
                     "verbose": verbose,
                     **kwargs
                 }
@@ -1244,10 +1245,7 @@ class RunPodModel(TranscriptionModel):
             data_source = blob
         else:
             raise ValueError("Must specify either 'path', 'url', or 'blob'")
-        
-        if diarize:
-            raise NotImplementedError("Diarization is not supported for RunPod engine")
-        
+                
         if verbose:
             print(f"Using RunPod engine with model: {self.model}")
             print(f"Payload type: {payload_type}")
@@ -1263,6 +1261,7 @@ class RunPodModel(TranscriptionModel):
                 "transcribe_args": {
                     "language": language,
                     "diarize": diarize,
+                    "diarization_args": diarization_args,
                     "verbose": verbose,
                     **kwargs
                 }
