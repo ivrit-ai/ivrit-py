@@ -328,7 +328,6 @@ def identify_speakers_with_optimization(mp3_path: str, segments: List[Segment],
         with torch.no_grad():
             embedding = classifier.encode_batch(segment_audio)
             embedding_np = embedding.squeeze().cpu().numpy()
-            print(embedding_np)
             all_embeddings.append(embedding_np)
             all_segments_with_embeddings.append((i, segment, embedding_np))
             
@@ -494,11 +493,10 @@ def assign_speakers(
         seg.speaker = speaker
 
         # assign speaker to words
-        if hasattr(seg, "words"):
-            for word in seg.words:
-                if word["start"]:
-                    speaker = match_speaker_to_interval(diarization_df, start=word["start"], end=word["end"], fill_nearest=fill_nearest)
-                    word["speaker"] = speaker
+        for word in seg.words:
+            if word.start:
+                speaker = match_speaker_to_interval(diarization_df, start=word.start, end=word.end, fill_nearest=fill_nearest)
+                word.speaker = speaker
                     
     return transcription_segments
 
@@ -632,10 +630,7 @@ def diarize_ivrit(
             # Also assign speaker to words if available
             if hasattr(segment, "words") and segment.words:
                 for word in segment.words:
-                    if hasattr(word, "__setitem__"):  # dict-like
-                        word["speaker"] = f"SPEAKER_{speaker_id:02d}"
-                    else:  # Word object
-                        word.speaker = f"SPEAKER_{speaker_id:02d}"
+                    word.speaker = f"SPEAKER_{speaker_id:02d}"
     
     return transcription_segments
 
