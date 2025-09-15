@@ -13,7 +13,6 @@ This module provides two speaker diarization implementations:
 
 import json
 import logging
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -204,7 +203,6 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
     """Speaker diarization engine using SpeechBrain ECAPA-TDNN embeddings with clustering."""
     
     SPEECHBRAIN_MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
-    SPEECHBRAIN_MODEL_SAVEDIR = "pretrained_models/spkrec-ecapa-voxceleb"
     
     def __init__(self):
         pass
@@ -244,7 +242,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
                 "calinski_harabasz_score": 0.0,
                 "davies_bouldin_score": float('inf')
             }
-        
+
         try:
             silhouette = silhouette_score(embeddings, labels, metric='cosine')
             calinski_harabasz = calinski_harabasz_score(embeddings, labels)
@@ -301,7 +299,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             methods["agglomerative_cosine"] = {
                 "labels": agg_cosine_labels.tolist(),
                 "metrics": agg_cosine_metrics,
-                    "composite_score": self._calculate_composite_score(agg_cosine_metrics)
+                "composite_score": self._calculate_composite_score(agg_cosine_metrics)
             }
         except Exception as e:
             logger.warning(f"Agglomerative cosine failed for {n_clusters} clusters: {e}")
@@ -381,7 +379,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         
         # Assign speakers to all segments based on clustering
         all_labels = self._assign_speakers_to_all_segments(
-        all_segments_with_embeddings, labels, embeddings
+            all_segments_with_embeddings, labels, embeddings
         )
         
         results = {
@@ -438,7 +436,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
     def _identify_speakers_with_optimization(self, mp3_path: str, segments: List[Segment],
                                           min_speakers, max_speakers,
                                           min_segment_duration: float = 1.0,
-                                          output_dir: str = "speaker_analysis_results") -> Dict[str, Any]:
+                                          device: Union[str, torch.device] = "cpu") -> Dict[str, Any]:
         """
         Extract speaker embeddings and try different clustering configurations
         
@@ -448,7 +446,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             min_speakers: Minimum number of speakers to try
             max_speakers: Maximum number of speakers to try
             min_segment_duration: Minimum segment duration to process (seconds)
-            output_dir: Directory to save results
+            device: Device to run on ("cpu", "cuda", or torch.device)
         
         Returns:
             Dictionary with best clustering results and analysis
@@ -458,15 +456,13 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         except ImportError:
             raise ImportError("speechbrain is required for the 'ivrit' diarization engine. Install with: pip install speechbrain")
         
-        # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Load the pre-trained ECAPA-TDNN model
         logger.info("Loading ECAPA-TDNN model...")
         classifier = EncoderClassifier.from_hparams(
-            source=self.SPEECHBRAIN_MODEL_SOURCE,
-            savedir=self.SPEECHBRAIN_MODEL_SAVEDIR
+                source=self.SPEECHBRAIN_MODEL_SOURCE,
+                run_opts={'device': str(device)}
         )
         
         # Load audio
@@ -591,13 +587,6 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             logger.info(f"Composite score: {best_config['composite_score']:.3f}")
             logger.info(f"Silhouette score: {best_config['metrics']['silhouette_score']:.3f}")
         
-        # Save detailed results to JSON
-        json_path = os.path.join(output_dir, f"speaker_analysis_{timestamp}.json")
-        with open(json_path, 'w') as f:
-            json.dump(all_results, f, indent=2)
-        
-        logger.info("Results saved to:")
-        logger.info(f"  Detailed analysis: {json_path}")
         
         all_results["summary"] = summary_data
         return all_results
@@ -611,7 +600,6 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         min_speakers: Optional[int] = None,
         max_speakers: Optional[int] = None,
         min_segment_duration: float = 1.0,
-        output_dir: str = "speaker_analysis_results",
         verbose: bool = False,
         **kwargs
     ) -> List[Segment]:
@@ -624,7 +612,6 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             min_speakers: Minimum number of speakers to consider.
             max_speakers: Maximum number of speakers to consider.
             min_segment_duration: Minimum segment duration for clustering.
-            output_dir: Output directory for analysis results.
             verbose: Whether to enable verbose logging.
             
         Returns:
@@ -651,7 +638,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             min_speakers=clustering_min_speakers,
             max_speakers=clustering_max_speakers,
             min_segment_duration=min_segment_duration,
-            output_dir=output_dir
+            device=device
         )
         
         if "error" in results:
@@ -675,7 +662,6 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         return transcription_segments
 
 
-
 def diarize(
     audio: Union[str, npt.NDArray],
     transcription_segments: List[Segment],
@@ -687,7 +673,6 @@ def diarize(
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
     min_segment_duration: float = 1.0,
-    output_dir: str = "speaker_analysis_results",
     use_auth_token: Optional[str] = None,
     verbose: bool = False,
 ) -> List[Segment]:
@@ -708,7 +693,6 @@ def diarize(
         min_speakers: Minimum number of speakers to consider.
         max_speakers: Maximum number of speakers to consider.
         min_segment_duration: Minimum segment duration for clustering (ivrit engine only).
-        output_dir: Output directory for analysis results (ivrit engine only).
         use_auth_token: Authentication token for model download (pyannote engine only).
         verbose: Whether to enable verbose logging.
 
@@ -766,6 +750,5 @@ def diarize(
             min_speakers=min_speakers,
             max_speakers=max_speakers,
             min_segment_duration=min_segment_duration,
-            output_dir=output_dir,
             verbose=verbose,
         )
