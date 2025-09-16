@@ -24,7 +24,7 @@ class TestDiarization:
         assert audio_path.exists(), f"Test audio file not found: {audio_path}"
         return str(audio_path)
     
-    def test_diarization_core(self, model, diarization_engine, audio_file_path):
+    def _test_diarization_core(self, model, diarization_engine, audio_file_path):
         """Core diarization test function"""
         result = model.transcribe(
             path=audio_file_path,
@@ -39,12 +39,12 @@ class TestDiarization:
     def test_faster_whisper_pyannote(self, audio_file_path):
         """Test faster-whisper with pyannote diarization"""
         model = load_model(engine="faster-whisper", model="ivrit-ai/whisper-large-v3-turbo-ct2")
-        self.test_diarization_core(model, "pyannote", audio_file_path)
+        self._test_diarization_core(model, "pyannote", audio_file_path)
     
     def test_faster_whisper_ivrit(self, audio_file_path):
         """Test faster-whisper with ivrit diarization"""
         model = load_model(engine="faster-whisper", model="ivrit-ai/whisper-large-v3-turbo-ct2")
-        self.test_diarization_core(model, "ivrit", audio_file_path)
+        self._test_diarization_core(model, "ivrit", audio_file_path)
     
     def test_runpod_pyannote(self, audio_file_path):
         """Test runpod with pyannote diarization"""
@@ -60,7 +60,7 @@ class TestDiarization:
             api_key=api_key,
             endpoint_id=endpoint_id
         )
-        self.test_diarization_core(model, "pyannote", audio_file_path)
+        self._test_diarization_core(model, "pyannote", audio_file_path)
     
     def test_runpod_ivrit(self, audio_file_path):
         """Test runpod with ivrit diarization"""
@@ -76,4 +76,4 @@ class TestDiarization:
             api_key=api_key,
             endpoint_id=endpoint_id
         )
-        self.test_diarization_core(model, "ivrit", audio_file_path)
+        self._test_diarization_core(model, "ivrit", audio_file_path)
