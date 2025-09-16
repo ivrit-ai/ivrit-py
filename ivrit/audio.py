@@ -518,12 +518,13 @@ class WhisperSession(TranscriptionSession):
 class FasterWhisperModel(TranscriptionModel):
     """Faster Whisper transcription model"""
     
-    def __init__(self, model: str, device: str = None, local_files_only: bool = False):
+    def __init__(self, model: str, device: str = None, local_files_only: bool = False, **kwargs):
         super().__init__(engine="faster-whisper", model=model)
         
         self.model_path = model
         self.device = device if device else utils.guess_device()
         self.local_files_only = local_files_only
+        self.model_kwargs = kwargs
         
         # Load the model immediately
         self.model_object = self._load_faster_whisper_model()
@@ -559,6 +560,9 @@ class FasterWhisperModel(TranscriptionModel):
             args['device_index'] = device_index
         if self.local_files_only:
             args['local_files_only'] = self.local_files_only
+        
+        # Add any additional kwargs passed to the constructor
+        args.update(self.model_kwargs)
         
         print(f'Loading faster-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return faster_whisper.WhisperModel(self.model_path, **args)
@@ -689,12 +693,13 @@ class FasterWhisperModel(TranscriptionModel):
 class StableWhisperModel(TranscriptionModel):
     """Stable Whisper transcription model"""
     
-    def __init__(self, model: str, device: str = None, local_files_only: bool = False):
+    def __init__(self, model: str, device: str = None, local_files_only: bool = False, **kwargs):
         super().__init__(engine="stable-whisper", model=model)
         
         self.model_path = model
         self.device = device if device else utils.guess_device()
         self.local_files_only = local_files_only
+        self.model_kwargs = kwargs
         
         # Load the model immediately
         self.model_object = self._load_stable_whisper_model()
@@ -730,6 +735,9 @@ class StableWhisperModel(TranscriptionModel):
             args['device_index'] = device_index
         if self.local_files_only:
             args['local_files_only'] = self.local_files_only
+        
+        # Add any additional kwargs passed to the constructor
+        args.update(self.model_kwargs)
         
         print(f'Loading stable-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return stable_whisper.load_faster_whisper(self.model_path, **args)
@@ -1351,11 +1359,14 @@ def load_model(
     Args:
         engine: Transcription engine to use ('faster-whisper', 'stable-whisper', 'runpod', or 'stable-ts')
         model: Model name for the selected engine
-        **kwargs: Additional arguments for specific engines:
-            - faster-whisper: device, local_files_only
-            - stable-whisper: device, local_files_only
+        **kwargs: Additional arguments for specific engines. Known arguments include:
+            - faster-whisper: device, local_files_only, and any other arguments accepted by WhisperModel
+            - stable-whisper: device, local_files_only, and any other arguments accepted by stable_whisper.load_faster_whisper
             - runpod: api_key (required), endpoint_id (required), core_engine
             - stable-ts: (future implementation)
+            
+            Any additional kwargs not recognized by the model wrapper will be passed directly
+            to the underlying model constructor (WhisperModel or stable_whisper.load_faster_whisper).
         
     Returns:
         TranscriptionModel object that can be used for transcription
