@@ -225,6 +225,14 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
     def _extract_segment_audio(self, waveform: torch.Tensor, sample_rate: int, 
                          start_time: float, end_time: float):
         """Extract audio segment from waveform"""
+        duration = end_time - start_time
+        
+        # If duration is less than 0.1 seconds, enlarge by 50ms on each side
+        if duration < 0.1:
+            expansion = 0.05  # 50ms
+            start_time = max(0, start_time - expansion)
+            end_time = min(waveform.shape[1] / sample_rate, end_time + expansion)
+        
         start_sample = int(start_time * sample_rate)
         end_sample = int(end_time * sample_rate)
         
@@ -476,34 +484,80 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         clustering_segments = []
         
         logger.info(f"Processing {len(segments)} segments...")
-        for i, segment in enumerate(segments):
-            duration = segment.end - segment.start
+        
+        # Process segments in batches of up to 8
+        batch_size = 8
+        for batch_start in range(0, len(segments), batch_size):
+            batch_end = min(batch_start + batch_size, len(segments))
+            batch_segments = segments[batch_start:batch_end]
             
-            # Extract segment audio
-            segment_audio = self._extract_segment_audio(
-                waveform, sample_rate, segment.start, segment.end
-            )
+            # Prepare batch data
+            batch_audio = []
+            batch_info = []  # (index, segment, duration, audio_tensor)
             
-            # Skip if segment is empty
-            if segment_audio.shape[1] == 0:
-                logger.debug(f"Skipping segment {i} (empty audio)")
-                all_segments_with_embeddings.append((i, segment, None))
-                continue
-            
-            # Extract embedding for ALL segments
-            with torch.no_grad():
-                embedding = classifier.encode_batch(segment_audio)
-                embedding_np = embedding.squeeze().cpu().numpy()
-                all_embeddings.append(embedding_np)
-                all_segments_with_embeddings.append((i, segment, embedding_np))
+            for i, segment in enumerate(batch_segments):
+                segment_idx = batch_start + i
+                duration = segment.end - segment.start
                 
-                # Only add to clustering if duration meets minimum
-                if duration >= min_segment_duration:
-                    clustering_embeddings.append(embedding_np)
-                    clustering_segments.append((i, segment))
-                    logger.debug(f"Processed segment {i}: {segment.start:.1f}s-{segment.end:.1f}s (used for clustering)")
-                else:
-                    logger.debug(f"Processed segment {i}: {segment.start:.1f}s-{segment.end:.1f}s (embedding only)")
+                # Extract segment audio
+                segment_audio = self._extract_segment_audio(
+                    waveform, sample_rate, segment.start, segment.end
+                )
+                
+                # Skip if segment is empty
+                if segment_audio.shape[1] == 0:
+                    logger.debug(f"Skipping segment {segment_idx} (empty audio)")
+                    all_segments_with_embeddings.append((segment_idx, segment, None))
+                    continue
+                
+                batch_audio.append(segment_audio)
+                batch_info.append((segment_idx, segment, duration, segment_audio))
+            
+            # Process batch if we have any valid segments
+            if batch_audio:
+                # Calculate lengths for padding
+                max_length = max(audio.shape[1] for audio in batch_audio)
+                
+                # Pad all segments to same length and stack into batch
+                padded_batch = []
+                wav_lens = []
+                
+                for audio in batch_audio:
+                    current_length = audio.shape[1]
+                    if current_length < max_length:
+                        # Pad with zeros
+                        padding = torch.zeros(audio.shape[0], max_length - current_length)
+                        padded_audio = torch.cat([audio, padding], dim=1)
+                    else:
+                        padded_audio = audio
+                    
+                    padded_batch.append(padded_audio)
+                    wav_lens.append(current_length / max_length)
+                
+                # Stack into batch tensor [batch_size, channels, time]
+                batch_tensor = torch.stack(padded_batch, dim=0)
+                wav_lens_tensor = torch.tensor(wav_lens)
+                
+                # Extract embeddings for the batch
+                with torch.no_grad():
+                    batch_embeddings = classifier.encode_batch(batch_tensor, wav_lens_tensor)
+                    batch_embeddings_np = batch_embeddings.cpu().numpy()
+                
+                # Assign embeddings back to segments
+                for j, (segment_idx, segment, duration, _) in enumerate(batch_info):
+                    embedding_np = batch_embeddings_np[j]
+                    all_embeddings.append(embedding_np)
+                    all_segments_with_embeddings.append((segment_idx, segment, embedding_np))
+                    
+                    # Only add to clustering if duration meets minimum
+                    if duration >= min_segment_duration:
+                        clustering_embeddings.append(embedding_np)
+                        clustering_segments.append((segment_idx, segment))
+                        logger.debug(f"Processed segment {segment_idx}: {segment.start:.1f}s-{segment.end:.1f}s (used for clustering)")
+                    else:
+                        logger.debug(f"Processed segment {segment_idx}: {segment.start:.1f}s-{segment.end:.1f}s (embedding only)")
+                
+                logger.debug(f"Processed batch of {len(batch_info)} segments")
         
         if len(clustering_embeddings) == 0:
             return {"error": "No segments meet minimum duration for clustering"}
