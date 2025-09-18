@@ -561,6 +561,11 @@ class FasterWhisperModel(TranscriptionModel):
         if self.local_files_only:
             args['local_files_only'] = self.local_files_only
         
+        # Set default compute_type based on device if not provided by user.
+        # We have seen cases where transcription accuracy degrades when using int8.
+        if 'compute_type' not in self.model_kwargs:
+            args['compute_type'] = 'float16' if device == 'cuda' else 'float32'
+        
         # Add any additional kwargs passed to the constructor
         args.update(self.model_kwargs)
         
@@ -736,6 +741,11 @@ class StableWhisperModel(TranscriptionModel):
         if self.local_files_only:
             args['local_files_only'] = self.local_files_only
         
+        # Set default compute_type based on device if not provided by user
+        # We have seen cases where transcription accuracy degrades when using int8.
+        if 'compute_type' not in self.model_kwargs:
+            args['compute_type'] = 'float16' if device == 'cuda' else 'float32'
+
         # Add any additional kwargs passed to the constructor
         args.update(self.model_kwargs)
         
@@ -1360,11 +1370,11 @@ def load_model(
         engine: Transcription engine to use ('faster-whisper', 'stable-whisper', 'runpod', or 'stable-ts')
         model: Model name for the selected engine
         **kwargs: Additional arguments for specific engines. Known arguments include:
-            - faster-whisper: device, local_files_only, and any other arguments accepted by WhisperModel
-            - stable-whisper: device, local_files_only, and any other arguments accepted by stable_whisper.load_faster_whisper
+            - faster-whisper: device, local_files_only, compute_type, and any other arguments accepted by WhisperModel
+            - stable-whisper: device, local_files_only, compute_type, and any other arguments accepted by stable_whisper.load_faster_whisper
             - runpod: api_key (required), endpoint_id (required), core_engine
             - stable-ts: (future implementation)
-            
+                     
             Any additional kwargs not recognized by the model wrapper will be passed directly
             to the underlying model constructor (WhisperModel or stable_whisper.load_faster_whisper).
         
