@@ -233,6 +233,10 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             start_time = max(0, start_time - expansion)
             end_time = min(waveform.shape[1] / sample_rate, end_time + expansion)
         
+        # Check final duration after potential expansion
+        final_duration = end_time - start_time
+        should_process = final_duration >= 0.05
+        
         start_sample = int(start_time * sample_rate)
         end_sample = int(end_time * sample_rate)
         
@@ -240,7 +244,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         start_sample = max(0, start_sample)
         end_sample = min(waveform.shape[1], end_sample)
         
-        return waveform[:, start_sample:end_sample]
+        return waveform[:, start_sample:end_sample], should_process
 
     def _calculate_clustering_metrics(self, embeddings: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
         """Calculate various clustering quality metrics"""
@@ -488,13 +492,16 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             duration = segment.end - segment.start
             
             # Extract segment audio
-            segment_audio = self._extract_segment_audio(
+            segment_audio, should_process = self._extract_segment_audio(
                 waveform, sample_rate, segment.start, segment.end
             )
             
-            # Skip if segment is empty
-            if segment_audio.shape[1] == 0:
-                logger.debug(f"Skipping segment {i} (empty audio)")
+            # Skip if segment is empty or too short after expansion
+            if segment_audio.shape[1] == 0 or not should_process:
+                if segment_audio.shape[1] == 0:
+                    logger.debug(f"Skipping segment {i} (empty audio)")
+                else:
+                    logger.debug(f"Skipping segment {i} (too short after expansion)")
                 all_segments_with_embeddings.append((i, segment, None))
                 continue
             
@@ -661,11 +668,19 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         # Assign speaker information to segments
         for i, segment in enumerate(transcription_segments):
             speaker_id = best_results["segments"][i]["speaker_id"]
-            segment.speakers = [f"SPEAKER_{speaker_id:02d}"]
+            
+            # Only assign speaker if we have a valid speaker_id (not -1 for skipped segments)
+            if speaker_id != -1:
+                segment.speakers = [f"SPEAKER_{speaker_id:02d}"]
                 
-            # Also assign speaker to words if available
-            for word in segment.words:
-                word.speaker = f"SPEAKER_{speaker_id:02d}"
+                # Also assign speaker to words if available
+                for word in segment.words:
+                    word.speaker = f"SPEAKER_{speaker_id:02d}"
+            else:
+                # No speaker assignment for segments that were too short
+                segment.speakers = []
+                for word in segment.words:
+                    word.speaker = None
         
         return transcription_segments
 
