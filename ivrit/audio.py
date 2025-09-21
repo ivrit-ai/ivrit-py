@@ -929,15 +929,14 @@ class RunPodJob:
                     break
 
                 for item in data['stream']:
-                    # Decode JSON result
-                    output = item['output']
-                    try:
-                        # Parse JSON and reconstruct Segment object
-                        decoded_output = Segment(**output)
-                        yield decoded_output
-                    except Exception as e:
-                        # If JSON decode fails, raise the exception
-                        raise Exception(f"Failed to decode JSON: {e}")
+                    for element in item['output']:
+                        try:
+                            # Parse JSON and reconstruct Segment object
+                            decoded_element = Segment(**element)
+                            yield decoded_element
+                        except Exception as e:
+                            # If JSON decode fails, raise the exception
+                            raise Exception(f"Failed to decode JSON: {e}")
 
                 if data['status'] == 'COMPLETED':
                     return
@@ -1015,15 +1014,14 @@ class AsyncRunPodJob:
                             break
 
                         for item in data['stream']:
-                            # Decode JSON result
-                            output = item['output']
-                            try:
-                                # Parse JSON and reconstruct Segment object
-                                decoded_output = Segment(**output)
-                                yield decoded_output
-                            except Exception as e:
-                                # If JSON decode fails, raise the exception
-                                raise Exception(f"Failed to decode JSON: {e}")
+                            for element in item['output']:
+                                try:
+                                    # Parse JSON and reconstruct Segment object
+                                    decoded_element = Segment(**element)
+                                    yield decoded_element
+                                except Exception as e:
+                                    # If JSON decode fails, raise the exception
+                                    raise Exception(f"Failed to decode JSON: {e}")
 
                         if data['status'] == 'COMPLETED':
                             return
