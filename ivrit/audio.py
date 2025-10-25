@@ -173,6 +173,7 @@ class TranscriptionModel(ABC):
         stream: bool = False,
         diarize: bool = False,
         diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Union[dict, Generator]:
@@ -187,6 +188,9 @@ class TranscriptionModel(ABC):
             stream: Whether to return results as a generator (True) or full result (False)
             diarize: Whether to enable speaker diarization  
             diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
+            output_options: Dictionary controlling output verbosity. Supported keys:
+                - word_timestamps (bool): Whether to populate word-level timestamps (default: True)
+                - extra_data (bool): Whether to populate extra metadata fields (default: True)
             verbose: Whether to enable verbose output
             **kwargs: Additional keyword arguments for the transcription model.
         Returns:
@@ -210,8 +214,18 @@ class TranscriptionModel(ABC):
         if stream and diarize:
             raise ValueError("Streaming (stream=True) is not compatible with diarization (diarize=True). Diarization requires processing all segments before speaker assignment.")
 
+        # Default output options if not provided
+        if output_options is None:
+            output_options = {}
+        
+        # Set defaults for output options
+        output_options = {
+            'word_timestamps': output_options.get('word_timestamps', True),
+            'extra_data': output_options.get('extra_data', True),
+        }
+
         # Get streaming results from the model
-        segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, diarization_args=diarization_args, verbose=verbose, **kwargs)
+        segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, diarization_args=diarization_args, output_options=output_options, verbose=verbose, **kwargs)
         
         if stream:
             # Return generator directly
@@ -251,6 +265,7 @@ class TranscriptionModel(ABC):
         language: Optional[str] = None,
         diarize: bool = False,
         diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Dict[str, Any],
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -264,6 +279,7 @@ class TranscriptionModel(ABC):
             language: Language code for transcription
             diarize: Whether to enable speaker diarization
             diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
+            output_options: Dictionary controlling output verbosity (word_timestamps, extra_data)
             verbose: Whether to enable verbose output
             **kwargs: Additional keyword arguments for the transcription model.
             
@@ -608,6 +624,7 @@ class FasterWhisperModel(TranscriptionModel):
         language: Optional[str] = None,
         diarize: bool = False,
         diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Dict[str, Any],
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -627,18 +644,19 @@ class FasterWhisperModel(TranscriptionModel):
         
         try:
             # Transcribe using faster-whisper directly with file path
-            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=True)
+            # Enable word timestamps if requested
+            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
             
             # Collect segments for diarization if needed
             all_segments = [] if diarize else None
             
             for segment in segments:
-                # Build extra_data dictionary
-                extra_data = _copy_segment_extra_data(segment, language=language)
+                # Build extra_data dictionary if requested
+                segment_extra_data = _copy_segment_extra_data(segment, language=language) if output_options['extra_data'] else {}
                 
-                # Process words if available
-                words = []
-                if hasattr(segment, 'words') and segment.words:
+                # Process words if available and requested
+                segment_words = []
+                if output_options['word_timestamps'] and hasattr(segment, 'words') and segment.words:
                     for word_data in segment.words:
                         word = Word(
                             word=word_data.word,
@@ -646,15 +664,15 @@ class FasterWhisperModel(TranscriptionModel):
                             end=word_data.end,
                             probability=getattr(word_data, 'probability', None)
                         )
-                        words.append(word)
+                        segment_words.append(word)
                 
                 # Create Segment object
                 segment_obj = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
-                    words=words,
-                    extra_data=extra_data
+                    words=segment_words,
+                    extra_data=segment_extra_data
                 )
                 
                 if diarize:
@@ -788,6 +806,7 @@ class StableWhisperModel(TranscriptionModel):
         language: Optional[str] = None,
         diarize: bool = False,
         diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Dict[str, Any],
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -807,19 +826,20 @@ class StableWhisperModel(TranscriptionModel):
         
         try:
             # Transcribe using stable-whisper with word timestamps
-            result = self.model_object.transcribe(audio_path, language=language, word_timestamps=True)
+            # Enable word timestamps if requested
+            result = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
             segments = result.segments
             
             # Collect segments for diarization if needed
             all_segments = [] if diarize else None
             
             for segment in segments:
-                # Build extra_data dictionary
-                extra_data = _copy_segment_extra_data(segment, language=language)
+                # Build extra_data dictionary if requested
+                segment_extra_data = _copy_segment_extra_data(segment, language=language) if output_options['extra_data'] else {}
                 
-                # Process words if available
-                words = []
-                if hasattr(segment, 'words') and segment.words:
+                # Process words if available and requested
+                segment_words = []
+                if output_options['word_timestamps'] and hasattr(segment, 'words') and segment.words:
                     for word_data in segment.words:
                         word = Word(
                             word=word_data.word,
@@ -827,15 +847,15 @@ class StableWhisperModel(TranscriptionModel):
                             end=word_data.end,
                             probability=getattr(word_data, 'probability', None)
                         )
-                        words.append(word)
+                        segment_words.append(word)
                 
                 # Create Segment object
                 segment_obj = Segment(
                     text=segment.text,
                     start=segment.start,
                     end=segment.end,
-                    words=words,
-                    extra_data=extra_data
+                    words=segment_words,
+                    extra_data=segment_extra_data
                 )
                 
                 if diarize:
@@ -1102,6 +1122,7 @@ class RunPodModel(TranscriptionModel):
         language: Optional[str] = None,
         diarize: bool = False,
         diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Dict[str, Any],
         verbose: bool = False,
         **kwargs,
     ) -> Generator[Segment, None, None]:
@@ -1137,6 +1158,8 @@ class RunPodModel(TranscriptionModel):
                     "language": language,
                     "diarize": diarize,
                     "diarization_args": diarization_args,
+                    "word_timestamps": output_options['word_timestamps'],
+                    "extra_data": output_options['extra_data'],
                     "verbose": verbose,
                     **kwargs
                 }
@@ -1218,6 +1241,7 @@ class RunPodModel(TranscriptionModel):
         language: Optional[str] = None,
         diarize: bool = False,
         diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> AsyncGenerator[Segment, None]:
@@ -1231,6 +1255,9 @@ class RunPodModel(TranscriptionModel):
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             diarize: Whether to enable speaker diarization  
             diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
+            output_options: Dictionary controlling output verbosity. Supported keys:
+                - word_timestamps (bool): Whether to populate word-level timestamps (default: True)
+                - extra_data (bool): Whether to populate extra metadata fields (default: True)
             verbose: Whether to enable verbose output
             **kwargs: Additional keyword arguments for the transcription model.
         Returns:
@@ -1248,6 +1275,16 @@ class RunPodModel(TranscriptionModel):
         
         if len(provided_args) == 0:
             raise ValueError("Must specify either 'path', 'url', or 'blob'")
+
+        # Default output options if not provided
+        if output_options is None:
+            output_options = {}
+        
+        # Set defaults for output options
+        output_options = {
+            'word_timestamps': output_options.get('word_timestamps', True),
+            'extra_data': output_options.get('extra_data', True),
+        }
 
         # Determine payload type and data
         if path is not None:
@@ -1278,6 +1315,8 @@ class RunPodModel(TranscriptionModel):
                     "language": language,
                     "diarize": diarize,
                     "diarization_args": diarization_args,
+                    "word_timestamps": output_options['word_timestamps'],
+                    "extra_data": output_options['extra_data'],
                     "verbose": verbose,
                     **kwargs
                 }
