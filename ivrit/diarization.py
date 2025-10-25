@@ -9,28 +9,21 @@ This module provides two speaker diarization implementations:
 2. ivrit engine: Proprietary ivrit.ai implementation using SpeechBrain ECAPA-TDNN embeddings 
    with advanced clustering optimization techniques.
 """
+from __future__ import annotations
 
-
-import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional, Union, Dict, Any, TYPE_CHECKING
 
-import numpy as np
-import numpy.typing as npt
-import pandas as pd
-import torch
-import torchaudio
-from pyannote.audio import Pipeline
-from sklearn.cluster import AgglomerativeClustering, KMeans
-from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
-from sklearn.metrics.pairwise import cosine_similarity
+if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
+    import pandas as pd
+    import torch
 
 from .types import Segment
-from .utils import SAMPLE_RATE, load_audio
+from .utils import SAMPLE_RATE, load_audio, check_dependencies
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +58,10 @@ class PyannoteDiarizationEngine(BaseDiarizationEngine):
     DEFAULT_CHECKPOINT = "ivrit-ai/pyannote-speaker-diarization-3.1"
     
     def __init__(self):
-        pass
+        # Check for all dependencies
+        check_dependencies([
+            'numpy', 'pandas', 'torch', 'torchaudio', 'pyannote.audio'
+        ], 'PyAnnote diarization engine')
     
     def _match_speaker_to_interval(
         self,
@@ -166,6 +162,11 @@ class PyannoteDiarizationEngine(BaseDiarizationEngine):
         Returns:
             List of transcription segments with speaker labels assigned in-place.
         """
+        import numpy as np
+        import pandas as pd
+        import torch
+        from pyannote.audio import Pipeline
+        
         checkpoint_path = checkpoint_path or self.DEFAULT_CHECKPOINT
         if verbose:
             logger.info(f"Diarizing with pyannote, {checkpoint_path=}, {device=}, {num_speakers=}, {min_speakers=}, {max_speakers=}")
@@ -205,10 +206,16 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
     SPEECHBRAIN_MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
     
     def __init__(self):
-        pass
+        # Check for all dependencies
+        check_dependencies([
+            'numpy', 'pandas', 'torch', 'torchaudio', 'sklearn.cluster', 'speechbrain.inference.speaker'
+        ], 'Ivrit diarization engine')
     
     def _load_audio_speechbrain(self, mp3_path: str, target_sr: int = 16000):
         """Load MP3 file and convert to the format expected by SpeechBrain"""
+        import torch
+        import torchaudio
+        
         waveform, sample_rate = torchaudio.load(mp3_path)
         
         # Convert to mono if stereo
@@ -248,6 +255,9 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
 
     def _calculate_clustering_metrics(self, embeddings: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
         """Calculate various clustering quality metrics"""
+        import numpy as np
+        from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+        
         if len(np.unique(labels)) < 2:
             return {
                 "silhouette_score": -1.0,
@@ -278,6 +288,8 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         Calculate a composite score for clustering quality
         Higher is better (normalized to 0-1 range)
         """
+        import numpy as np
+        
         # Normalize silhouette score (range -1 to 1) to 0-1
         silhouette_normalized = (metrics["silhouette_score"] + 1) / 2
         
@@ -296,6 +308,8 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
 
     def _try_clustering_methods(self, embeddings: np.ndarray, n_clusters: int) -> Dict[str, Any]:
         """Try different clustering methods for given number of clusters"""
+        from sklearn.cluster import AgglomerativeClustering, KMeans
+        
         methods = {}
         
         # Agglomerative clustering with cosine distance
@@ -356,6 +370,9 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         Assign speakers to all segments based on clustering centroids.
         Uses cosine similarity to find the closest cluster centroid for each segment.
         """
+        import numpy as np
+        from sklearn.metrics.pairwise import cosine_similarity
+        
         # Calculate cluster centroids from clustering segments
         unique_labels = np.unique(labels)
         centroids = {}
@@ -388,6 +405,7 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
     def _process_clustering_results(self, all_segments_with_embeddings: List,
                              labels: List[int], embeddings: np.ndarray) -> Dict[str, Any]:
         """Process clustering results into speaker statistics for ALL segments"""
+        import numpy as np
         
         # Assign speakers to all segments based on clustering
         all_labels = self._assign_speakers_to_all_segments(
@@ -463,10 +481,10 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         Returns:
             Dictionary with best clustering results and analysis
         """
-        try:
-            from speechbrain.inference.speaker import EncoderClassifier
-        except ImportError:
-            raise ImportError("speechbrain is required for the 'ivrit' diarization engine. Install with: pip install speechbrain")
+        import numpy as np
+        import torch
+        from datetime import datetime
+        from speechbrain.inference.speaker import EncoderClassifier
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         

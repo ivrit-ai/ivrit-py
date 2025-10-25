@@ -1,17 +1,60 @@
 """
 This file includes modified code from WhisperX (https://github.com/m-bain/whisperX), originally licensed under the BSD 2-Clause License.
 """
+from __future__ import annotations
+
 import os
 import subprocess
 import tempfile
 import urllib.request
 import base64
-from typing import Optional
+from typing import Optional, TYPE_CHECKING, List, Dict, Any
 
-import numpy as np
-import numpy.typing as npt
+if TYPE_CHECKING:
+    import numpy.typing as npt
 
 SAMPLE_RATE = 16000
+
+
+def check_dependencies(module_specs: List[str], feature_name: str = "This feature") -> Dict[str, Any]:
+    """
+    Check if required modules are installed and return them.
+    
+    Args:
+        module_specs: List of module names to import (e.g., ['numpy', 'torch'])
+        feature_name: Name of the feature requiring these dependencies
+        
+    Returns:
+        Dictionary mapping module names to imported modules
+        
+    Raises:
+        ImportError: If any required module is missing
+    """
+    missing = []
+    modules = {}
+    
+    for module_spec in module_specs:
+        try:
+            # Handle module.submodule imports
+            if '.' in module_spec:
+                parts = module_spec.split('.')
+                module = __import__(module_spec)
+                # Navigate to the submodule
+                for part in parts[1:]:
+                    module = getattr(module, part)
+                modules[module_spec] = module
+            else:
+                modules[module_spec] = __import__(module_spec)
+        except ImportError:
+            missing.append(module_spec)
+    
+    if missing:
+        raise ImportError(
+            f"{feature_name} requires additional dependencies: {', '.join(missing)}. "
+            f"Install with: pip install ivrit[all]"
+        )
+    
+    return modules
 
 
 def get_audio_file_path(
@@ -73,7 +116,7 @@ def get_audio_file_path(
     return audio_path
 
 
-def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray[np.float32]:
+def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray:
     """
     Open an audio file and read as mono waveform, resampling as necessary
 
@@ -89,6 +132,9 @@ def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray[np.float32]:
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
+    modules = check_dependencies(['numpy'], 'load_audio')
+    np = modules['numpy']
+    
     try:
         # Launches a subprocess to decode audio while down-mixing and resampling as necessary.
         # Requires the ffmpeg CLI to be installed.
@@ -116,7 +162,8 @@ def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray[np.float32]:
     return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
 
 def guess_device():
-    import torch
+    modules = check_dependencies(['torch'], 'guess_device')
+    torch = modules['torch']
 
     if torch.cuda.is_available():
         return 'cuda'
@@ -124,4 +171,3 @@ def guess_device():
         return 'mps'
     else:
         return 'cpu'
-

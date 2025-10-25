@@ -1,6 +1,7 @@
 """
 ivrit - Python package providing wrappers around ivrit.ai's capabilities
 """
+from __future__ import annotations
 
 from importlib.metadata import version, PackageNotFoundError
 try:

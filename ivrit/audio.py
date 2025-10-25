@@ -1,6 +1,8 @@
 """
 Audio transcription functionality for ivrit.ai
 """
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -537,6 +539,9 @@ class FasterWhisperModel(TranscriptionModel):
     def __init__(self, model: str, device: str = None, local_files_only: bool = False, **kwargs):
         super().__init__(engine="faster-whisper", model=model)
         
+        # Check for required dependencies
+        utils.check_dependencies(['faster_whisper', 'numpy'], 'FasterWhisperModel')
+        
         self.model_path = model
         self.device = device if device else utils.guess_device()
         self.local_files_only = local_files_only
@@ -550,10 +555,7 @@ class FasterWhisperModel(TranscriptionModel):
         Load the actual faster-whisper model.
         """
         # Import faster_whisper
-        try:
-            import faster_whisper
-        except ImportError:
-            raise ImportError("faster-whisper is not installed. Please install it with: pip install faster-whisper")
+        import faster_whisper
         
         device_index = None
         
@@ -719,6 +721,9 @@ class StableWhisperModel(TranscriptionModel):
     def __init__(self, model: str, device: str = None, local_files_only: bool = False, **kwargs):
         super().__init__(engine="stable-whisper", model=model)
         
+        # Check for required dependencies
+        utils.check_dependencies(['stable_whisper', 'numpy'], 'StableWhisperModel')
+        
         self.model_path = model
         self.device = device if device else utils.guess_device()
         self.local_files_only = local_files_only
@@ -732,10 +737,7 @@ class StableWhisperModel(TranscriptionModel):
         Load the actual stable-whisper model.
         """
         # Import stable_whisper
-        try:
-            import stable_whisper
-        except ImportError:
-            raise ImportError("stable-whisper is not installed. Please install it with: pip install stable-whisper")
+        import stable_whisper
         
         device_index = None
         
