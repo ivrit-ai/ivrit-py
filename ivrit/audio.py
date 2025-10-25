@@ -1160,8 +1160,7 @@ class RunPodModel(TranscriptionModel):
                     "language": language,
                     "diarize": diarize,
                     "diarization_args": diarization_args,
-                    "word_timestamps": output_options['word_timestamps'],
-                    "extra_data": output_options['extra_data'],
+                    "output_options": output_options,
                     "verbose": verbose,
                     **kwargs
                 }
@@ -1317,8 +1316,7 @@ class RunPodModel(TranscriptionModel):
                     "language": language,
                     "diarize": diarize,
                     "diarization_args": diarization_args,
-                    "word_timestamps": output_options['word_timestamps'],
-                    "extra_data": output_options['extra_data'],
+                    "output_options": output_options,
                     "verbose": verbose,
                     **kwargs
                 }
