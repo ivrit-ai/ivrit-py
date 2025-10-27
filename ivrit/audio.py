@@ -1419,13 +1419,12 @@ def load_model(
     Load a transcription model for the specified engine and model.
     
     Args:
-        engine: Transcription engine to use ('faster-whisper', 'stable-whisper', 'runpod', or 'stable-ts')
+        engine: Transcription engine to use ('faster-whisper', 'stable-whisper', 'runpod')
         model: Model name for the selected engine
         **kwargs: Additional arguments for specific engines. Known arguments include:
             - faster-whisper: device, local_files_only, compute_type, and any other arguments accepted by WhisperModel
             - stable-whisper: device, local_files_only, compute_type, and any other arguments accepted by stable_whisper.load_faster_whisper
             - runpod: api_key (required), endpoint_id (required), core_engine
-            - stable-ts: (future implementation)
                      
             Any additional kwargs not recognized by the model wrapper will be passed directly
             to the underlying model constructor (WhisperModel or stable_whisper.load_faster_whisper).
@@ -1443,8 +1442,5 @@ def load_model(
         return StableWhisperModel(model=model, **kwargs)
     elif engine == "runpod":
         return RunPodModel(model=model, **kwargs)
-    elif engine == "stable-ts":
-        # Placeholder for future implementation
-        raise NotImplementedError("stable-ts engine not yet implemented")
     else:
-        raise ValueError(f"Unsupported engine: {engine}. Supported engines: 'faster-whisper', 'stable-whisper', 'runpod', 'stable-ts'")
+        raise ValueError(f"Unsupported engine: {engine}. Supported engines: 'faster-whisper', 'stable-whisper', 'runpod'")
