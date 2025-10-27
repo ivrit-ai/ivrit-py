@@ -633,6 +633,11 @@ class FasterWhisperModel(TranscriptionModel):
         """
         Transcribe using faster-whisper engine.
         """
+        # Validate diarization support
+        if diarize:
+            raise NotImplementedError("Diarization (diarize=True) is only supported with StableWhisper models. "
+                                    "Please use StableWhisperModel or RunPodModel with core_engine='stable-whisper'.")
+        
         # Handle URL download or blob processing if needed
         audio_path = utils.get_audio_file_path(path=path, url=url, blob=blob, verbose=verbose)
         
@@ -1131,6 +1136,11 @@ class RunPodModel(TranscriptionModel):
         """
         Transcribe using RunPod engine.
         """
+        # Validate diarization support
+        if diarize and self.core_engine != "stable-whisper":
+            raise NotImplementedError("Diarization (diarize=True) is only supported with core_engine='stable-whisper'. "
+                                    f"Current core_engine is '{self.core_engine}'.")
+        
         # Determine payload type and data
         if path is not None:
             payload_type = "blob"
@@ -1269,6 +1279,11 @@ class RunPodModel(TranscriptionModel):
             FileNotFoundError: If the specified path doesn't exist
             Exception: For other transcription errors
         """
+        # Validate diarization support
+        if diarize and self.core_engine != "stable-whisper":
+            raise NotImplementedError("Diarization (diarize=True) is only supported with core_engine='stable-whisper'. "
+                                    f"Current core_engine is '{self.core_engine}'.")
+        
         # Validate arguments
         provided_args = [arg for arg in [path, url, blob] if arg is not None]
         if len(provided_args) > 1:
