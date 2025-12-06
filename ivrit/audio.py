@@ -8,6 +8,8 @@ import base64
 import json
 import logging
 import os
+import subprocess
+import tempfile
 import time
 import io
 import wave
@@ -22,6 +24,29 @@ from . import utils
 from .types import Segment, Word
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_timestamp_to_seconds(timestamp: str) -> float:
+    """
+    Parse a timestamp in format "HH:MM:SS,mmm" to seconds.
+    
+    Args:
+        timestamp: Timestamp string in format "HH:MM:SS,mmm"
+        
+    Returns:
+        Time in seconds as float
+    """
+    parts = timestamp.split(',')
+    time_part = parts[0]
+    milliseconds = int(parts[1]) if len(parts) > 1 else 0
+    
+    time_parts = time_part.split(':')
+    hours = int(time_parts[0])
+    minutes = int(time_parts[1])
+    seconds = int(time_parts[2])
+    
+    total_seconds = hours * 3600 + minutes * 60 + seconds + milliseconds / 1000.0
+    return total_seconds
 
 
 def _copy_segment_extra_data(segment, language: Optional[str] = None) -> dict:
@@ -975,28 +1000,37 @@ class StableWhisperModel(TranscriptionModel):
 
 
 class WhisperCppModel(TranscriptionModel):
-    """whisper.cpp transcription model via pywhispercpp"""
+    """whisper.cpp transcription model via pywhispercpp or executable"""
     
-    def __init__(self, model: str, n_threads: int = None, **kwargs):
+    def __init__(self, model: str, n_threads: int = None, executable: Optional[str] = None, **kwargs):
         """
         Initialize a whisper.cpp model.
         
         Args:
             model: Model name (e.g., 'base', 'small', 'medium', 'large') or path to a .bin model file
             n_threads: Number of threads to use for transcription (default: auto-detect)
-            **kwargs: Additional arguments passed to pywhispercpp Model constructor
+            executable: Path to whisper.cpp executable. If provided, will use the executable directly
+                       instead of pywhispercpp
+            **kwargs: Additional arguments passed to pywhispercpp Model constructor (ignored if executable is provided)
         """
         super().__init__(engine="whisper-cpp", model=model)
         
-        # Check for required dependencies
-        utils.check_dependencies(['pywhispercpp.model'], 'WhisperCppModel')
-        
         self.model_path = model
-        self.n_threads = n_threads
-        self.model_kwargs = kwargs
+        self.executable = executable
         
-        # Load the model immediately
-        self.model_object = self._load_whisper_cpp_model()
+        if executable is None:
+            # Check for required dependencies only if not using executable
+            utils.check_dependencies(['pywhispercpp.model'], 'WhisperCppModel')
+            self.n_threads = n_threads
+            self.model_kwargs = kwargs
+            # Load the model immediately
+            self.model_object = self._load_whisper_cpp_model()
+        else:
+            # When using executable, don't load pywhispercpp model
+            self.n_threads = None
+            self.model_kwargs = {}
+            self.model_object = None
+            logger.info(f'Using whisper.cpp executable: {executable}')
     
     def _load_whisper_cpp_model(self) -> Any:
         """
@@ -1056,7 +1090,7 @@ class WhisperCppModel(TranscriptionModel):
         **kwargs,
     ) -> Generator[Segment, None, None]:
         """
-        Transcribe using whisper.cpp engine via pywhispercpp.
+        Transcribe using whisper.cpp engine via pywhispercpp or executable.
         """
         # Default output_options if not provided
         if output_options is None:
@@ -1075,41 +1109,46 @@ class WhisperCppModel(TranscriptionModel):
             logger.info(f"Processing file: {audio_path}")
         
         try:
-            # Build transcribe arguments
-            transcribe_args = {}
-            if language is not None:
-                transcribe_args['language'] = language
-            
-            # Add any extra kwargs
-            transcribe_args.update(kwargs)
-            
-            # Transcribe using pywhispercpp
-            # Returns list of Segment namedtuples with t0, t1 (centiseconds), text
-            segments = self.model_object.transcribe(audio_path, **transcribe_args)
-            
-            for segment in segments:
-                # Convert centiseconds to seconds
-                # pywhispercpp uses t0/t1 in centiseconds (1/100th of a second)
-                start_time = segment.t0 / 100.0
-                end_time = segment.t1 / 100.0
+            if self.executable is not None:
+                # Use executable directly
+                yield from self._transcribe_with_executable(audio_path, language, output_options, verbose)
+            else:
+                # Use pywhispercpp
+                # Build transcribe arguments
+                transcribe_args = {}
+                if language is not None:
+                    transcribe_args['language'] = language
                 
-                # Build extra_data dictionary if requested
-                segment_extra_data = {}
-                if output_options.get('extra_data', True):
-                    if language:
-                        segment_extra_data['language'] = language
+                # Add any extra kwargs
+                transcribe_args.update(kwargs)
                 
-                # Create Segment object
-                # Note: pywhispercpp doesn't provide word-level timestamps in basic API
-                segment_obj = Segment(
-                    text=segment.text,
-                    start=start_time,
-                    end=end_time,
-                    words=[],
-                    extra_data=segment_extra_data
-                )
+                # Transcribe using pywhispercpp
+                # Returns list of Segment namedtuples with t0, t1 (centiseconds), text
+                segments = self.model_object.transcribe(audio_path, **transcribe_args)
                 
-                yield segment_obj
+                for segment in segments:
+                    # Convert centiseconds to seconds
+                    # pywhispercpp uses t0/t1 in centiseconds (1/100th of a second)
+                    start_time = segment.t0 / 100.0
+                    end_time = segment.t1 / 100.0
+                    
+                    # Build extra_data dictionary if requested
+                    segment_extra_data = {}
+                    if output_options.get('extra_data', True):
+                        if language:
+                            segment_extra_data['language'] = language
+                    
+                    # Create Segment object
+                    # Note: pywhispercpp doesn't provide word-level timestamps in basic API
+                    segment_obj = Segment(
+                        text=segment.text,
+                        start=start_time,
+                        end=end_time,
+                        words=[],
+                        extra_data=segment_extra_data
+                    )
+                    
+                    yield segment_obj
                 
         except Exception as e:
             if verbose:
@@ -1120,6 +1159,105 @@ class WhisperCppModel(TranscriptionModel):
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
+    
+    def _transcribe_with_executable(
+        self,
+        audio_path: str,
+        language: Optional[str],
+        output_options: Dict[str, Any],
+        verbose: bool
+    ) -> Generator[Segment, None, None]:
+        """
+        Transcribe using whisper.cpp executable directly.
+        
+        Args:
+            audio_path: Path to audio file
+            language: Language code for transcription
+            output_options: Output options dictionary
+            verbose: Whether to enable verbose output
+            
+        Yields:
+            Segment objects from the transcription
+        """
+        # Create temporary file for JSON output
+        # whisper.cpp -oj flag creates <file>.json, so we need base path without .json
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as json_file:
+            json_output_base = json_file.name
+            json_output_path = json_output_base + '.json'
+        
+        try:
+            # Build command: executable -m <model> -l <language> -oj <file>
+            cmd = [self.executable, '-m', self.model_path]
+            
+            if language is not None:
+                cmd.extend(['-l', language])
+            
+            cmd.extend(['-oj', json_output_path])
+            cmd.append(audio_path)
+            
+            if verbose:
+                logger.info(f"Running command: {' '.join(cmd)}")
+            
+            # Run the executable
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            if verbose and result.stdout:
+                logger.info(f"Executable stdout: {result.stdout}")
+            if verbose and result.stderr:
+                logger.info(f"Executable stderr: {result.stderr}")
+            
+            # Load JSON result
+            json_path = json_output_path
+            if not os.path.exists(json_path):
+                raise FileNotFoundError(f"Expected JSON output file not found: {json_path}")
+            
+            with open(json_path, 'r', encoding='utf-8') as f:
+                result_data = json.load(f)
+            
+            # Parse transcription segments
+            transcription = result_data.get('transcription', [])
+            
+            for item in transcription:
+                # Parse timestamps - prefer offsets (milliseconds) if available, otherwise parse timestamp strings
+                if 'offsets' in item:
+                    start_time = item['offsets']['from'] / 1000.0
+                    end_time = item['offsets']['to'] / 1000.0
+                elif 'timestamps' in item:
+                    start_time = _parse_timestamp_to_seconds(item['timestamps']['from'])
+                    end_time = _parse_timestamp_to_seconds(item['timestamps']['to'])
+                else:
+                    # Fallback: use 0 if neither is available
+                    start_time = 0.0
+                    end_time = 0.0
+                
+                text = item.get('text', '')
+                
+                # Build extra_data dictionary if requested
+                segment_extra_data = {}
+                if output_options.get('extra_data', True):
+                    if language:
+                        segment_extra_data['language'] = language
+                
+                # Create Segment object
+                segment_obj = Segment(
+                    text=text,
+                    start=start_time,
+                    end=end_time,
+                    words=[],
+                    extra_data=segment_extra_data
+                )
+                
+                yield segment_obj
+                
+        finally:
+            # Clean up temporary JSON file
+            if os.path.exists(json_output_path):
+                os.remove(json_output_path)
 
 
 class RunPodJob:
@@ -1646,7 +1784,7 @@ def load_model(
         **kwargs: Additional arguments for specific engines. Known arguments include:
             - faster-whisper: device, local_files_only, compute_type, and any other arguments accepted by WhisperModel
             - stable-whisper: device, local_files_only, compute_type, and any other arguments accepted by stable_whisper.load_faster_whisper
-            - whisper-cpp: n_threads, and any other arguments accepted by pywhispercpp.model.Model
+            - whisper-cpp: n_threads, executable (path to whisper.cpp executable), and any other arguments accepted by pywhispercpp.model.Model
             - runpod: api_key (required), endpoint_id (required), core_engine
                      
             Any additional kwargs not recognized by the model wrapper will be passed directly
