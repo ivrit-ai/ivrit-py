@@ -20,6 +20,7 @@ import requests
 
 from . import utils
 from .types import Segment, Word
+from .utils import ProgressCallback, emit_progress, invoke_progress
 
 logger = logging.getLogger(__name__)
 
@@ -180,23 +181,41 @@ class TranscriptionModel(ABC):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> Union[dict, Generator]:
         """
         Transcribe audio using this model.
-        
+
         Args:
             path: Path to the audio file to transcribe (mutually exclusive with url and blob)
             url: URL to download and transcribe (mutually exclusive with path and blob)
             blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
             stream: Whether to return results as a generator (True) or full result (False)
-            diarize: Whether to enable speaker diarization  
+            diarize: Whether to enable speaker diarization
             diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
             output_options: Dictionary controlling output verbosity. Supported keys:
                 - word_timestamps (bool): Whether to populate word-level timestamps (default: True)
                 - extra_data (bool): Whether to populate extra metadata fields (default: True)
             verbose: Whether to enable verbose output
+            on_progress: Optional callback invoked periodically as work
+                advances. Receives a dict with the following core keys:
+                  - 'phase': str, either 'transcription' or 'diarization'.
+                    A single callback may be invoked with both values when a
+                    transcribe-then-diarize run is in progress; events are
+                    emitted in phase order.
+                  - 'step': str — a sub-phase label such as 'decode',
+                    'embedding', or 'clustering'.
+                  - 'step_fraction': float — 0.0 to 1.0, progress within the
+                    current step. 0.0 when the engine cannot compute it.
+                  - 'description': str — short human-readable label suitable
+                    for a UI progress indicator.
+                  - 'extra': dict — engine-specific data (e.g.
+                    'processed_seconds', 'total_seconds', 'segment_index',
+                    'clusters_tried'). May be empty.
+                Exceptions raised by the callback are caught and logged at
+                warning level.
             **kwargs: Additional keyword arguments for the transcription model.
         Returns:
             If stream=True: Generator yielding transcription segments
@@ -230,7 +249,7 @@ class TranscriptionModel(ABC):
         }
 
         # Get streaming results from the model
-        segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, diarization_args=diarization_args, output_options=output_options, verbose=verbose, **kwargs)
+        segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, diarization_args=diarization_args, output_options=output_options, verbose=verbose, on_progress=on_progress, **kwargs)
         
         if stream:
             # Return generator directly
@@ -262,8 +281,8 @@ class TranscriptionModel(ABC):
     
     @abstractmethod
     def transcribe_core(
-        self, 
-        *, 
+        self,
+        *,
         path: Optional[str] = None,
         url: Optional[str] = None,
         blob: Optional[str] = None,
@@ -272,11 +291,12 @@ class TranscriptionModel(ABC):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Dict[str, Any],
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> Generator[Segment, None, None]:
         """
         Core transcription method that must be implemented by derived classes.
-        
+
         Args:
             path: Path to the audio file to transcribe (mutually exclusive with url and blob)
             url: URL to download and transcribe (mutually exclusive with path and blob)
@@ -286,8 +306,9 @@ class TranscriptionModel(ABC):
             diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
             output_options: Dictionary controlling output verbosity (word_timestamps, extra_data)
             verbose: Whether to enable verbose output
+            on_progress: Optional progress callback. See TranscriptionModel.transcribe.
             **kwargs: Additional keyword arguments for the transcription model.
-            
+
         Returns:
             Generator yielding Segment objects
         """
@@ -303,24 +324,28 @@ class TranscriptionModel(ABC):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> AsyncGenerator[Segment, None]:
         """
         Transcribe audio using this model asynchronously.
-        
+
         Runs the transcription in a thread pool to allow other coroutines to continue.
-        
+
         Args:
             path: Path to the audio file to transcribe (mutually exclusive with url and blob)
             url: URL to download and transcribe (mutually exclusive with path and blob)
             blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
-            diarize: Whether to enable speaker diarization  
+            diarize: Whether to enable speaker diarization
             diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
             output_options: Dictionary controlling output verbosity. Supported keys:
                 - word_timestamps (bool): Whether to populate word-level timestamps (default: True)
                 - extra_data (bool): Whether to populate extra metadata fields (default: True)
             verbose: Whether to enable verbose output
+            on_progress: Optional progress callback. See TranscriptionModel.transcribe.
+                When the user-supplied callback may be invoked from a worker
+                thread (default async impl), it must be thread-safe.
             **kwargs: Additional keyword arguments for the transcription model.
         Returns:
             AsyncGenerator yielding transcription segments
@@ -353,7 +378,8 @@ class TranscriptionModel(ABC):
             return list(self.transcribe_core(
                 path=path, url=url, blob=blob, language=language,
                 diarize=diarize, diarization_args=diarization_args,
-                output_options=output_options, verbose=verbose, **kwargs
+                output_options=output_options, verbose=verbose,
+                on_progress=on_progress, **kwargs
             ))
         
         # Run transcription in thread pool to allow other coroutines to continue
@@ -692,8 +718,8 @@ class FasterWhisperModel(TranscriptionModel):
         return session
 
     def transcribe_core(
-        self, 
-        *, 
+        self,
+        *,
         path: Optional[str] = None,
         url: Optional[str] = None,
         blob: Optional[str] = None,
@@ -702,6 +728,7 @@ class FasterWhisperModel(TranscriptionModel):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Dict[str, Any],
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> Generator[Segment, None, None]:
         """
@@ -711,10 +738,10 @@ class FasterWhisperModel(TranscriptionModel):
         if diarize:
             raise NotImplementedError("Diarization (diarize=True) is only supported with StableWhisper models. "
                                     "Please use StableWhisperModel or RunPodModel with core_engine='stable-whisper'.")
-        
+
         # Handle URL download or blob processing if needed
         audio_path = utils.get_audio_file_path(path=path, url=url, blob=blob, verbose=verbose)
-        
+
         if verbose:
             logger.info(f"Using faster-whisper engine with model: {self.model}")
             logger.info(f"Processing file: {audio_path}")
@@ -722,19 +749,20 @@ class FasterWhisperModel(TranscriptionModel):
                 logger.info(f"Using pre-loaded model: {self.model_object}")
             if diarize:
                 logger.info("Diarization is enabled")
-        
+
         try:
             # Transcribe using faster-whisper directly with file path
             # Enable word timestamps if requested
             segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
-            
+            total_seconds = getattr(info, "duration", None)
+
             # Collect segments for diarization if needed
             all_segments = [] if diarize else None
-            
+
             for segment in segments:
                 # Build extra_data dictionary if requested
                 segment_extra_data = _copy_segment_extra_data(segment, language=language) if output_options['extra_data'] else {}
-                
+
                 # Process words if available and requested
                 segment_words = []
                 if output_options['word_timestamps'] and hasattr(segment, 'words') and segment.words:
@@ -746,7 +774,7 @@ class FasterWhisperModel(TranscriptionModel):
                             probability=getattr(word_data, 'probability', None)
                         )
                         segment_words.append(word)
-                
+
                 # Create Segment object
                 segment_obj = Segment(
                     text=segment.text,
@@ -755,7 +783,17 @@ class FasterWhisperModel(TranscriptionModel):
                     words=segment_words,
                     extra_data=segment_extra_data
                 )
-                
+
+                emit_progress(
+                    on_progress,
+                    phase="transcription",
+                    step="decode",
+                    step_fraction=segment.end / total_seconds if total_seconds else 0.0,
+                    description="Transcribing audio",
+                    processed_seconds=segment.end,
+                    total_seconds=total_seconds,
+                )
+
                 if diarize:
                     all_segments.append(segment_obj)
                 else:
@@ -774,6 +812,7 @@ class FasterWhisperModel(TranscriptionModel):
                     audio=audio_path,
                     transcription_segments=all_segments,
                     verbose=verbose,
+                    on_progress=on_progress,
                     **diar_kwargs
                 )
                 
@@ -876,8 +915,8 @@ class StableWhisperModel(TranscriptionModel):
         return session
 
     def transcribe_core(
-        self, 
-        *, 
+        self,
+        *,
         path: Optional[str] = None,
         url: Optional[str] = None,
         blob: Optional[str] = None,
@@ -886,6 +925,7 @@ class StableWhisperModel(TranscriptionModel):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Dict[str, Any],
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> Generator[Segment, None, None]:
         """
@@ -893,7 +933,7 @@ class StableWhisperModel(TranscriptionModel):
         """
         # Handle URL download or blob processing if needed
         audio_path = utils.get_audio_file_path(path=path, url=url, blob=blob, verbose=verbose)
-        
+
         if verbose:
             logger.info(f"Using stable-whisper engine with model: {self.model}")
             logger.info(f"Processing file: {audio_path}")
@@ -901,11 +941,31 @@ class StableWhisperModel(TranscriptionModel):
                 logger.info(f"Using pre-loaded model: {self.model_object}")
             if diarize:
                 logger.info("Diarization is enabled")
-        
+
         try:
+            # Adapt the unified on_progress contract to stable-whisperless's
+            # native (seek_seconds, total_duration_seconds) progress_callback.
+            # We pass this wrapper unconditionally; emit_progress is a no-op
+            # when on_progress is None.
+            def _stable_whisper_progress(seek: float, total: float) -> None:
+                emit_progress(
+                    on_progress,
+                    phase="transcription",
+                    step="decode",
+                    step_fraction=seek / total if total else 0.0,
+                    description="Transcribing audio",
+                    processed_seconds=float(seek),
+                    total_seconds=float(total),
+                )
+
             # Transcribe using stable-whisper with word timestamps
             # Enable word timestamps if requested
-            result = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
+            result = self.model_object.transcribe(
+                audio_path,
+                language=language,
+                word_timestamps=output_options['word_timestamps'],
+                progress_callback=_stable_whisper_progress,
+            )
             segments = result.segments
             
             # Collect segments for diarization if needed
@@ -954,6 +1014,7 @@ class StableWhisperModel(TranscriptionModel):
                     audio=audio_path,
                     transcription_segments=all_segments,
                     verbose=verbose,
+                    on_progress=on_progress,
                     **diar_kwargs
                 )
                 
@@ -1044,8 +1105,8 @@ class WhisperCppModel(TranscriptionModel):
         return session
 
     def transcribe_core(
-        self, 
-        *, 
+        self,
+        *,
         path: Optional[str] = None,
         url: Optional[str] = None,
         blob: Optional[str] = None,
@@ -1054,6 +1115,7 @@ class WhisperCppModel(TranscriptionModel):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Dict[str, Any] = None,
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> Generator[Segment, None, None]:
         """
@@ -1062,28 +1124,47 @@ class WhisperCppModel(TranscriptionModel):
         # Default output_options if not provided
         if output_options is None:
             output_options = {'word_timestamps': True, 'extra_data': True}
-        
+
         # Validate diarization support
         if diarize:
             raise NotImplementedError("Diarization (diarize=True) is not supported with whisper.cpp engine. "
                                     "Please use StableWhisperModel or RunPodModel with core_engine='stable-whisper'.")
-        
+
         # Handle URL download or blob processing if needed
         audio_path = utils.get_audio_file_path(path=path, url=url, blob=blob, verbose=verbose)
-        
+
         if verbose:
             logger.info(f"Using whisper.cpp engine with model: {self.model}")
             logger.info(f"Processing file: {audio_path}")
-        
+
         try:
             # Build transcribe arguments
             transcribe_args = {}
             if language is not None:
                 transcribe_args['language'] = language
-            
+
             # Add any extra kwargs
             transcribe_args.update(kwargs)
-            
+
+            # Adapt the unified on_progress contract to pywhispercpp's
+            # new_segment_callback. pywhispercpp passes a Segment namedtuple
+            # with t0/t1 in centiseconds. Probe duration via ffmpeg so we
+            # can report a meaningful step_fraction.
+            if on_progress is not None:
+                total_seconds = utils.get_audio_duration(audio_path)
+                def _whisper_cpp_segment(segment) -> None:
+                    processed = segment.t1 / 100.0
+                    emit_progress(
+                        on_progress,
+                        phase="transcription",
+                        step="decode",
+                        step_fraction=processed / total_seconds if total_seconds else 0.0,
+                        description="Transcribing audio",
+                        processed_seconds=processed,
+                        total_seconds=total_seconds,
+                    )
+                transcribe_args["new_segment_callback"] = _whisper_cpp_segment
+
             # Transcribe using pywhispercpp
             # Returns list of Segment namedtuples with t0, t1 (centiseconds), text
             segments = self.model_object.transcribe(audio_path, **transcribe_args)
@@ -1179,14 +1260,19 @@ class RunPodJob:
                     break
 
                 for item in data['stream']:
-                    for element in item['output']:
-                        try:
-                            # Parse JSON and reconstruct Segment object
-                            decoded_element = Segment(**element)
-                            yield decoded_element
-                        except Exception as e:
-                            logger.error(f"Failed to decode RunPod stream element: {e}")
-                            raise Exception(f"Failed to decode JSON: {e}")
+                    if 'output' in item:
+                        for element in item['output']:
+                            try:
+                                # Parse JSON and reconstruct Segment object
+                                decoded_element = Segment(**element)
+                                yield decoded_element
+                            except Exception as e:
+                                logger.error(f"Failed to decode RunPod stream element: {e}")
+                                raise Exception(f"Failed to decode JSON: {e}")
+                    elif 'progress' in item:
+                        # Progress event from the worker; surfaced to the
+                        # caller as a dict via on_progress.
+                        yield {"progress": item['progress']}
 
                 if data['status'] == 'COMPLETED':
                     return
@@ -1267,14 +1353,19 @@ class AsyncRunPodJob:
                             break
 
                         for item in data['stream']:
-                            for element in item['output']:
-                                try:
-                                    # Parse JSON and reconstruct Segment object
-                                    decoded_element = Segment(**element)
-                                    yield decoded_element
-                                except Exception as e:
-                                    logger.error(f"Failed to decode RunPod async stream element: {e}")
-                                    raise Exception(f"Failed to decode JSON: {e}")
+                            if 'output' in item:
+                                for element in item['output']:
+                                    try:
+                                        # Parse JSON and reconstruct Segment object
+                                        decoded_element = Segment(**element)
+                                        yield decoded_element
+                                    except Exception as e:
+                                        logger.error(f"Failed to decode RunPod async stream element: {e}")
+                                        raise Exception(f"Failed to decode JSON: {e}")
+                            elif 'progress' in item:
+                                # Progress event from the worker; surfaced to
+                                # the caller as a dict via on_progress.
+                                yield {"progress": item['progress']}
 
                         if data['status'] == 'COMPLETED':
                             return
@@ -1347,8 +1438,8 @@ class RunPodModel(TranscriptionModel):
         return session
 
     def transcribe_core(
-        self, 
-        *, 
+        self,
+        *,
         path: Optional[str] = None,
         url: Optional[str] = None,
         blob: Optional[str] = None,
@@ -1357,6 +1448,7 @@ class RunPodModel(TranscriptionModel):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Dict[str, Any],
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> Generator[Segment, None, None]:
         """
@@ -1366,7 +1458,7 @@ class RunPodModel(TranscriptionModel):
         if diarize and self.core_engine != "stable-whisper":
             raise NotImplementedError("Diarization (diarize=True) is only supported with core_engine='stable-whisper'. "
                                     f"Current core_engine is '{self.core_engine}'.")
-        
+
         # Determine payload type and data
         if path is not None:
             payload_type = "blob"
@@ -1444,16 +1536,28 @@ class RunPodModel(TranscriptionModel):
         timeouts = 0
         while True:
             try:
-                for segment_data in run_request.stream():
-                    if isinstance(segment_data, Segment):
-                        yield segment_data
+                for stream_item in run_request.stream():
+                    if isinstance(stream_item, Segment):
+                        yield stream_item
+                    elif isinstance(stream_item, dict) and "progress" in stream_item:
+                        # Worker-emitted progress dict; pass through
+                        # unchanged. The worker is responsible for following
+                        # the on_progress contract; we only log a warning if
+                        # the dict obviously violates it (no 'phase').
+                        worker_progress = stream_item["progress"]
+                        if "phase" not in worker_progress:
+                            logger.warning(
+                                "RunPod worker progress event missing 'phase' key: %s",
+                                worker_progress,
+                            )
+                        invoke_progress(on_progress, worker_progress)
                     else:
-                        raise Exception(f"RunPod error: {segment_data}")
+                        raise Exception(f"RunPod error: {stream_item}")
 
                 # If we get here, streaming is complete
                 run_request = None
                 break
-                
+
             except requests.exceptions.ReadTimeout:
                 timeouts += 1
                 if timeouts > self.MAX_STREAM_TIMEOUTS:
@@ -1483,25 +1587,27 @@ class RunPodModel(TranscriptionModel):
         diarization_args: Optional[Dict[str, Any]] = None,
         output_options: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs,
     ) -> AsyncGenerator[Segment, None]:
         """
         Transcribe audio using RunPod asynchronously with native async I/O.
-        
+
         This specialized implementation uses aiohttp for better scalability
         when handling many concurrent requests, avoiding thread pool exhaustion.
-        
+
         Args:
             path: Path to the audio file to transcribe (mutually exclusive with url and blob)
             url: URL to download and transcribe (mutually exclusive with path and blob)
             blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
             language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
-            diarize: Whether to enable speaker diarization  
+            diarize: Whether to enable speaker diarization
             diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
             output_options: Dictionary controlling output verbosity. Supported keys:
                 - word_timestamps (bool): Whether to populate word-level timestamps (default: True)
                 - extra_data (bool): Whether to populate extra metadata fields (default: True)
             verbose: Whether to enable verbose output
+            on_progress: Optional progress callback. See TranscriptionModel.transcribe.
             **kwargs: Additional keyword arguments for the transcription model.
         Returns:
             AsyncGenerator yielding transcription segments
@@ -1615,15 +1721,27 @@ class RunPodModel(TranscriptionModel):
         timeouts = 0
         while True:
             try:
-                async for segment_data in run_request.stream():
-                    if isinstance(segment_data, Segment):
-                        yield segment_data
+                async for stream_item in run_request.stream():
+                    if isinstance(stream_item, Segment):
+                        yield stream_item
+                    elif isinstance(stream_item, dict) and "progress" in stream_item:
+                        # Worker-emitted progress dict; pass through
+                        # unchanged. The worker is responsible for following
+                        # the on_progress contract; we only log a warning if
+                        # the dict obviously violates it (no 'phase').
+                        worker_progress = stream_item["progress"]
+                        if "phase" not in worker_progress:
+                            logger.warning(
+                                "RunPod worker progress event missing 'phase' key: %s",
+                                worker_progress,
+                            )
+                        invoke_progress(on_progress, worker_progress)
                     else:
-                        raise Exception(f"RunPod error: {segment_data}")
+                        raise Exception(f"RunPod error: {stream_item}")
 
                 # If we get here, streaming is complete
                 run_request = None
-                break 
+                break
             except aiohttp.ClientError as e:
                 timeouts += 1
                 if timeouts > self.MAX_STREAM_TIMEOUTS:

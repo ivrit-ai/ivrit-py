@@ -23,29 +23,38 @@ if TYPE_CHECKING:
     import torch
 
 from .types import Segment
-from .utils import SAMPLE_RATE, load_audio, check_dependencies
+from .utils import (
+    ProgressCallback,
+    SAMPLE_RATE,
+    check_dependencies,
+    emit_progress,
+    load_audio,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class BaseDiarizationEngine(ABC):
     """Base class for speaker diarization engines."""
-    
+
     @abstractmethod
     def diarize(
         self,
         audio: Union[str, npt.NDArray],
         transcription_segments: List[Segment],
+        *,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs
     ) -> List[Segment]:
         """
         Perform speaker diarization on audio and assign speaker labels to transcription segments.
-        
+
         Args:
             audio: Path to audio file or NumPy array containing audio waveform.
             transcription_segments: List of transcription segments to assign speaker labels to.
+            on_progress: Optional progress callback. See ivrit.diarization.diarize.
             **kwargs: Engine-specific parameters.
-            
+
         Returns:
             List of transcription segments with speaker labels assigned.
         """
@@ -143,11 +152,12 @@ class PyannoteDiarizationEngine(BaseDiarizationEngine):
         max_speakers: Optional[int] = None,
         use_auth_token: Optional[str] = None,
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs
     ) -> List[Segment]:
         """
         Perform speaker diarization using PyAnnote.audio pipeline.
-        
+
         Args:
             audio: Path to audio file or NumPy array containing audio waveform.
             transcription_segments: List of transcription segments to assign speaker labels to.
@@ -158,7 +168,12 @@ class PyannoteDiarizationEngine(BaseDiarizationEngine):
             max_speakers: Maximum number of speakers to consider.
             use_auth_token: Authentication token for model download.
             verbose: Whether to enable verbose logging.
-            
+            on_progress: Optional progress callback. Each event has
+                `phase='diarization'`, `step` set to the pyannote pipeline
+                step name (e.g. `'segmentation'`, `'embeddings'`),
+                `step_fraction` derived from `completed/total`, and
+                `extra` containing `step_completed` and `step_total`.
+
         Returns:
             List of transcription segments with speaker labels assigned in-place.
         """
@@ -166,7 +181,7 @@ class PyannoteDiarizationEngine(BaseDiarizationEngine):
         import pandas as pd
         import torch
         from pyannote.audio import Pipeline
-        
+
         checkpoint_path = checkpoint_path or self.DEFAULT_CHECKPOINT
         if verbose:
             logger.info(f"Diarizing with pyannote, {checkpoint_path=}, {device=}, {num_speakers=}, {min_speakers=}, {max_speakers=}")
@@ -181,11 +196,27 @@ class PyannoteDiarizationEngine(BaseDiarizationEngine):
             "sample_rate": SAMPLE_RATE,
         }
         diarization_pipeline = Pipeline.from_pretrained(checkpoint_path, use_auth_token=use_auth_token).to(device)
+
+        # Adapter that translates pyannote's hook protocol
+        # (step_name, step_artifact, file, total, completed) into the unified
+        # on_progress contract. Passed as the `hook=` kwarg below.
+        def _pyannote_hook(step_name, step_artifact, file=None, total=None, completed=None):
+            emit_progress(
+                on_progress,
+                phase="diarization",
+                step=step_name,
+                step_fraction=completed / total if total else 0.0,
+                description=f"Diarization: {step_name}",
+                step_completed=completed,
+                step_total=total,
+            )
+
         diarization = diarization_pipeline(
             audio_data,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
+            hook=_pyannote_hook if on_progress is not None else None,
         )
         diarization_df = pd.DataFrame(
             diarization.itertracks(yield_label=True),
@@ -480,7 +511,8 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
     def _identify_speakers_with_optimization(self, mp3_path: str, segments: List[Segment],
                                           min_speakers, max_speakers,
                                           min_segment_duration: float = 1.0,
-                                          device: Union[str, torch.device] = "cpu") -> Dict[str, Any]:
+                                          device: Union[str, torch.device] = "cpu",
+                                          on_progress: Optional[ProgressCallback] = None) -> Dict[str, Any]:
         """
         Extract speaker embeddings and try different clustering configurations
         
@@ -518,16 +550,20 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         all_segments_with_embeddings = []
         clustering_embeddings = []
         clustering_segments = []
-        
+
+        # Total audio span covered by the transcription, used as the
+        # `total_seconds` reference for diarization-phase progress events.
+        total_segment_seconds = max((seg.end for seg in segments), default=0.0)
+
         logger.info(f"Processing {len(segments)} segments...")
         for i, segment in enumerate(segments):
             duration = segment.end - segment.start
-            
+
             # Extract segment audio
             segment_audio, should_process = self._extract_segment_audio(
                 waveform, sample_rate, segment.start, segment.end
             )
-            
+
             # Skip if segment is empty or too short after expansion
             if segment_audio.shape[1] == 0 or not should_process:
                 if segment_audio.shape[1] == 0:
@@ -535,15 +571,27 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
                 else:
                     logger.debug(f"Skipping segment {i} (too short after expansion)")
                 all_segments_with_embeddings.append((i, segment, None))
+                emit_progress(
+                    on_progress,
+                    phase="diarization",
+                    step="embedding",
+                    step_fraction=(i + 1) / len(segments) if len(segments) else 0.0,
+                    description="Diarization: computing speaker embeddings",
+                    segment_index=i,
+                    segment_total=len(segments),
+                    skipped=True,
+                    processed_seconds=segment.end,
+                    total_seconds=total_segment_seconds,
+                )
                 continue
-            
+
             # Extract embedding for ALL segments
             with torch.no_grad():
                 embedding = classifier.encode_batch(segment_audio)
                 embedding_np = embedding.squeeze().cpu().numpy()
                 all_embeddings.append(embedding_np)
                 all_segments_with_embeddings.append((i, segment, embedding_np))
-                
+
                 # Only add to clustering if duration meets minimum
                 if duration >= min_segment_duration:
                     clustering_embeddings.append(embedding_np)
@@ -551,6 +599,19 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
                     logger.debug(f"Processed segment {i}: {segment.start:.1f}s-{segment.end:.1f}s (used for clustering)")
                 else:
                     logger.debug(f"Processed segment {i}: {segment.start:.1f}s-{segment.end:.1f}s (embedding only)")
+
+            emit_progress(
+                on_progress,
+                phase="diarization",
+                step="embedding",
+                step_fraction=(i + 1) / len(segments) if len(segments) else 0.0,
+                description="Diarization: computing speaker embeddings",
+                segment_index=i,
+                segment_total=len(segments),
+                skipped=False,
+                processed_seconds=segment.end,
+                total_seconds=total_segment_seconds,
+            )
         
         if len(clustering_embeddings) == 0:
             return {"error": "No segments meet minimum duration for clustering"}
@@ -586,13 +647,25 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         best_config = None
         summary_data = []
         
-        for n_clusters in range(min_speakers, max_speakers + 1):
+        clustering_total = max_speakers - min_speakers + 1
+        for cluster_index, n_clusters in enumerate(range(min_speakers, max_speakers + 1)):
             logger.debug(f"Trying {n_clusters} speakers...")
-            
+
             cluster_methods = self._try_clustering_methods(clustering_embeddings, n_clusters)
-            
+
             # Store results for this number of clusters
             all_results["clustering_attempts"][str(n_clusters)] = cluster_methods
+
+            emit_progress(
+                on_progress,
+                phase="diarization",
+                step="clustering",
+                step_fraction=(cluster_index + 1) / clustering_total if clustering_total else 0.0,
+                description="Diarization: clustering speakers",
+                clusters_tried=cluster_index + 1,
+                clusters_total=clustering_total,
+                n_clusters=n_clusters,
+            )
             
             # Find best method for this number of clusters
             for method_name, method_results in cluster_methods.items():
@@ -648,11 +721,12 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
         max_speakers: Optional[int] = None,
         min_segment_duration: float = 1.0,
         verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
         **kwargs
     ) -> List[Segment]:
         """
         Perform speaker diarization using SpeechBrain ECAPA-TDNN embeddings with clustering.
-        
+
         Args:
             audio: Path to audio file or NumPy array containing audio waveform.
             transcription_segments: List of transcription segments to assign speaker labels to.
@@ -660,10 +734,20 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             max_speakers: Maximum number of speakers to consider.
             min_segment_duration: Minimum segment duration for clustering.
             verbose: Whether to enable verbose logging.
-            
+            on_progress: Optional progress callback. Emits two kinds of
+                events, both with `phase='diarization'`:
+                - `step='embedding'`: one event per transcription segment
+                  while extracting ECAPA-TDNN embeddings.
+                  `step_fraction=(i+1)/len(segments)`. `extra` contains
+                  `segment_index`, `segment_total`, `skipped`,
+                  `processed_seconds`, and `total_seconds`.
+                - `step='clustering'`: one event per clustering attempt
+                  (one per `n_clusters` value tried). `extra` contains
+                  `clusters_tried`, `clusters_total`, and `n_clusters`.
+
         Returns:
             List of transcription segments with speaker labels assigned in-place.
-            
+
         Raises:
             ValueError: If audio is not a file path.
             ImportError: If speechbrain is not available.
@@ -673,11 +757,11 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             audio_path = audio
         else:
             raise ValueError("ivrit engine currently only supports audio file paths, not numpy arrays")
-        
+
         # Determine min/max speakers for clustering
         clustering_min_speakers = min_speakers or 1
         clustering_max_speakers = max_speakers or 20
-        
+
         # Run the optimization
         results = self._identify_speakers_with_optimization(
             mp3_path=audio_path,
@@ -685,7 +769,8 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
             min_speakers=clustering_min_speakers,
             max_speakers=clustering_max_speakers,
             min_segment_duration=min_segment_duration,
-            device=device
+            device=device,
+            on_progress=on_progress,
         )
         
         if "error" in results:
@@ -730,6 +815,7 @@ def diarize(
     min_segment_duration: float = 1.0,
     use_auth_token: Optional[str] = None,
     verbose: bool = False,
+    on_progress: Optional[ProgressCallback] = None,
 ) -> List[Segment]:
     """
     Perform speaker diarization on audio and assign speaker labels to transcription segments.
@@ -737,7 +823,7 @@ def diarize(
     This is the canonical diarization function supporting multiple engines:
     - "pyannote": Uses PyAnnote.audio pipeline for neural speaker diarization
     - "ivrit": Uses SpeechBrain ECAPA-TDNN embeddings with clustering optimization
-    
+
     Args:
         audio: Path to audio file or NumPy array containing audio waveform.
         transcription_segments: List of transcription segments to assign speaker labels to.
@@ -750,10 +836,19 @@ def diarize(
         min_segment_duration: Minimum segment duration for clustering (ivrit engine only).
         use_auth_token: Authentication token for model download (pyannote engine only).
         verbose: Whether to enable verbose logging.
+        on_progress: Optional callback invoked periodically as diarization
+            advances. Receives a dict with core fields `phase`, `step`,
+            `step_fraction`, `description`, and an `extra` dict containing
+            engine-specific data (e.g. `processed_seconds`,
+            `segment_index`, `clusters_tried`). The exact extras and
+            frequency depend on the engine — see each engine's `diarize()`
+            for details. Exceptions raised by the callback are caught and
+            logged at warning level. Same contract as the transcription
+            `on_progress` so a single callback can serve both phases.
 
     Returns:
         List of transcription segments with speaker labels assigned in-place.
-        
+
     Raises:
         ValueError: If engine is not "pyannote" or "ivrit".
         ImportError: If required dependencies are missing.
@@ -768,8 +863,8 @@ def diarize(
             min_speakers=2,
             max_speakers=4
         )
-        
-        # Using Ivrit engine  
+
+        # Using Ivrit engine
         diarized_segments = diarize(
             audio="audio.mp3",
             transcription_segments=segments,
@@ -781,7 +876,7 @@ def diarize(
     """
     if engine not in ["pyannote", "ivrit"]:
         raise ValueError(f"Unsupported engine: {engine}. Must be 'pyannote' or 'ivrit'")
-    
+
     if engine == "pyannote":
         engine_instance = PyannoteDiarizationEngine()
         return engine_instance.diarize(
@@ -794,8 +889,9 @@ def diarize(
             max_speakers=max_speakers,
             use_auth_token=use_auth_token,
             verbose=verbose,
+            on_progress=on_progress,
         )
-    
+
     elif engine == "ivrit":
         engine_instance = IvritDiarizationEngine()
         return engine_instance.diarize(
@@ -806,4 +902,5 @@ def diarize(
             max_speakers=max_speakers,
             min_segment_duration=min_segment_duration,
             verbose=verbose,
+            on_progress=on_progress,
         )

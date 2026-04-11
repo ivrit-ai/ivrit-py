@@ -10,12 +10,63 @@ import tempfile
 import urllib.error
 import urllib.request
 import base64
-from typing import Optional, TYPE_CHECKING, List, Dict, Any
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy.typing as npt
 
 logger = logging.getLogger(__name__)
+
+
+# Type alias for the user-facing progress callback used by both transcription
+# and diarization. The dict shape is documented under
+# TranscriptionModel.transcribe (and the public diarize() function).
+ProgressCallback = Callable[[Dict[str, Any]], None]
+
+
+def invoke_progress(
+    on_progress: Optional[ProgressCallback],
+    progress: Dict[str, Any],
+) -> None:
+    """Invoke a user-supplied progress callback with a pre-built dict.
+
+    Exceptions raised by user code are caught and logged at warning level so
+    a faulty callback never aborts a transcription or diarization run.
+    """
+    if on_progress is None:
+        return
+    try:
+        on_progress(progress)
+    except Exception as e:
+        logger.warning("on_progress callback raised: %s", e)
+
+
+def emit_progress(
+    on_progress: Optional[ProgressCallback],
+    *,
+    phase: str,
+    step: str,
+    step_fraction: float,
+    description: str,
+    **extras: Any,
+) -> None:
+    """Build a normalized progress dict and invoke the user callback.
+
+    Convenience wrapper around `invoke_progress` for engine integrations
+    that build progress events from raw inputs (seek/total floats, segment
+    boundaries, clustering steps, etc.).  Engine-specific data passed via
+    ``**extras`` is nested under an ``"extra"`` key in the emitted dict.
+    """
+    if on_progress is None:
+        return
+    progress: Dict[str, Any] = {
+        "phase": phase,
+        "step": step,
+        "step_fraction": step_fraction,
+        "description": description,
+        "extra": dict(extras) if extras else {},
+    }
+    invoke_progress(on_progress, progress)
 
 SAMPLE_RATE = 16000
 
@@ -132,6 +183,24 @@ def get_audio_file_path(
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
     return audio_path
+
+
+def get_audio_duration(path: str) -> Optional[float]:
+    """Return the duration in seconds of an audio file using ffmpeg, or None on failure."""
+    try:
+        import re
+        import imageio_ffmpeg
+        result = subprocess.run(
+            [imageio_ffmpeg.get_ffmpeg_exe(), "-i", path, "-f", "null", "-"],
+            capture_output=True, text=True,
+        )
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
+        if match:
+            h, m, s = match.groups()
+            return int(h) * 3600 + int(m) * 60 + float(s)
+    except Exception:
+        pass
+    return None
 
 
 def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray:
