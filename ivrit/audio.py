@@ -1261,18 +1261,16 @@ class RunPodJob:
 
                 for item in data['stream']:
                     if 'output' in item:
-                        for element in item['output']:
-                            try:
-                                # Parse JSON and reconstruct Segment object
-                                decoded_element = Segment(**element)
-                                yield decoded_element
-                            except Exception as e:
-                                logger.error(f"Failed to decode RunPod stream element: {e}")
-                                raise Exception(f"Failed to decode JSON: {e}")
-                    elif 'progress' in item:
-                        # Progress event from the worker; surfaced to the
-                        # caller as a dict via on_progress.
-                        yield {"progress": item['progress']}
+                        output = item['output']
+                        if output['type'] == 'segments':
+                            for element in output['data']:
+                                try:
+                                    yield Segment(**element)
+                                except Exception as e:
+                                    logger.error(f"Failed to decode RunPod stream element: {e}")
+                                    raise Exception(f"Failed to decode JSON: {e}")
+                        elif output['type'] == 'progress':
+                            yield {"progress": output['data']}
 
                 if data['status'] == 'COMPLETED':
                     return
@@ -1354,18 +1352,16 @@ class AsyncRunPodJob:
 
                         for item in data['stream']:
                             if 'output' in item:
-                                for element in item['output']:
-                                    try:
-                                        # Parse JSON and reconstruct Segment object
-                                        decoded_element = Segment(**element)
-                                        yield decoded_element
-                                    except Exception as e:
-                                        logger.error(f"Failed to decode RunPod async stream element: {e}")
-                                        raise Exception(f"Failed to decode JSON: {e}")
-                            elif 'progress' in item:
-                                # Progress event from the worker; surfaced to
-                                # the caller as a dict via on_progress.
-                                yield {"progress": item['progress']}
+                                output = item['output']
+                                if output['type'] == 'segments':
+                                    for element in output['data']:
+                                        try:
+                                            yield Segment(**element)
+                                        except Exception as e:
+                                            logger.error(f"Failed to decode RunPod async stream element: {e}")
+                                            raise Exception(f"Failed to decode JSON: {e}")
+                                elif output['type'] == 'progress':
+                                    yield {"progress": output['data']}
 
                         if data['status'] == 'COMPLETED':
                             return
