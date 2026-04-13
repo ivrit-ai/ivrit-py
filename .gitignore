@@ -113,3 +113,6 @@ local_data/
 
 # History
 .history/
+
+# Audio
+*.wav
