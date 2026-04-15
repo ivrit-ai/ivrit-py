@@ -1547,7 +1547,7 @@ class RunPodModel(TranscriptionModel):
             )
             run_request.cancel()
             run_request = None
-            raise Exception("Transcription failed: timed out waiting for GPU worker")
+            raise TimeoutError("Transcription failed: timed out waiting for GPU worker")
         if status not in ("IN_PROGRESS", "COMPLETED"):
             emit_progress(
                 on_progress,
@@ -1763,7 +1763,7 @@ class RunPodModel(TranscriptionModel):
             )
             await run_request.cancel()
             run_request = None
-            raise Exception("Transcription failed: timed out waiting for GPU worker")
+            raise TimeoutError("Transcription failed: timed out waiting for GPU worker")
         if status not in ("IN_PROGRESS", "COMPLETED"):
             emit_progress(
                 on_progress,
