@@ -1519,8 +1519,10 @@ class RunPodModel(TranscriptionModel):
         if verbose:
             logger.info("Waiting for task to be queued...")
         
+        status = None
         for i in range(self.IN_QUEUE_TIMEOUT):
-            if run_request.status() == "IN_QUEUE":
+            status = run_request.status()
+            if status == "IN_QUEUE":
                 emit_progress(
                     on_progress,
                     phase="transcription",
@@ -1532,10 +1534,32 @@ class RunPodModel(TranscriptionModel):
                 time.sleep(1)
                 continue
             break
-        
         if verbose:
-            logger.info(f"Task status: {run_request.status()}")
-        
+            logger.info(f"Task status: {status}")
+
+        if status == "IN_QUEUE":
+            emit_progress(
+                on_progress,
+                phase="transcription",
+                step="queue",
+                step_fraction=0.0,
+                description="Timed out waiting for GPU worker",
+            )
+            run_request.cancel()
+            run_request = None
+            raise Exception("Transcription failed: timed out waiting for GPU worker")
+        if status not in ("IN_PROGRESS", "COMPLETED"):
+            emit_progress(
+                on_progress,
+                phase="transcription",
+                step="queue",
+                step_fraction=0.0,
+                description=f"Unexpected job status: {status}",
+            )
+            run_request.cancel()
+            run_request = None
+            raise Exception(f"Transcription failed: unexpected job status '{status}'")
+
         # Collect streaming results
         timeouts = 0
         while True:
@@ -1711,6 +1735,7 @@ class RunPodModel(TranscriptionModel):
         if verbose:
             logger.info("Waiting for task to be queued...")
         
+        status = None
         for i in range(self.IN_QUEUE_TIMEOUT):
             status = await run_request.status()
             if status == "IN_QUEUE":
@@ -1725,10 +1750,32 @@ class RunPodModel(TranscriptionModel):
                 await asyncio.sleep(1)
                 continue
             break
-        
         if verbose:
-            logger.info(f"Task status: {await run_request.status()}")
-        
+            logger.info(f"Task status: {status}")
+
+        if status == "IN_QUEUE":
+            emit_progress(
+                on_progress,
+                phase="transcription",
+                step="queue",
+                step_fraction=0.0,
+                description="Timed out waiting for GPU worker",
+            )
+            await run_request.cancel()
+            run_request = None
+            raise Exception("Transcription failed: timed out waiting for GPU worker")
+        if status not in ("IN_PROGRESS", "COMPLETED"):
+            emit_progress(
+                on_progress,
+                phase="transcription",
+                step="queue",
+                step_fraction=0.0,
+                description=f"Unexpected job status: {status}",
+            )
+            await run_request.cancel()
+            run_request = None
+            raise Exception(f"Transcription failed: unexpected job status '{status}'")
+
         # Collect streaming results
         timeouts = 0
         while True:
