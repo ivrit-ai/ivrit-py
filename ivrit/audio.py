@@ -1521,6 +1521,14 @@ class RunPodModel(TranscriptionModel):
         
         for i in range(self.IN_QUEUE_TIMEOUT):
             if run_request.status() == "IN_QUEUE":
+                emit_progress(
+                    on_progress,
+                    phase="transcription",
+                    step="queue",
+                    step_fraction=0.0,
+                    description="Waiting for GPU worker",
+                    queue_seconds=i,
+                )
                 time.sleep(1)
                 continue
             break
@@ -1706,6 +1714,14 @@ class RunPodModel(TranscriptionModel):
         for i in range(self.IN_QUEUE_TIMEOUT):
             status = await run_request.status()
             if status == "IN_QUEUE":
+                emit_progress(
+                    on_progress,
+                    phase="transcription",
+                    step="queue",
+                    step_fraction=0.0,
+                    description="Waiting for GPU worker",
+                    queue_seconds=i,
+                )
                 await asyncio.sleep(1)
                 continue
             break
