@@ -1212,13 +1212,16 @@ class RunPodJob:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}"
         }
+        self.job_id = None
 
-        # Submit the job immediately on creation
+        logger.debug(f"RunPodJob: POST {self.base_url}/run")
+        t0 = time.monotonic()
         response = requests.post(
             f"{self.base_url}/run",
             headers=self.headers,
-            json=payload
+            json=payload,
         )
+        logger.debug(f"RunPodJob: submit returned status={response.status_code} in {time.monotonic()-t0:.2f}s")
 
         if response.status_code == 401:
             logger.error("RunPod API authentication failed: invalid API key")
@@ -1230,35 +1233,56 @@ class RunPodJob:
 
         result = response.json()
         self.job_id = result.get("id")
+        logger.debug(f"RunPodJob[{self.job_id}]: submitted")
 
     def status(self):
         """Get job status"""
+        logger.debug(f"RunPodJob[{self.job_id}]: GET /status")
+        t0 = time.monotonic()
         response = requests.get(
             f"{self.base_url}/status/{self.job_id}",
-            headers=self.headers
+            headers=self.headers,
         )
+        logger.debug(f"RunPodJob[{self.job_id}]: status HTTP {response.status_code} in {time.monotonic()-t0:.2f}s")
         response.raise_for_status()
 
         status_response = response.json()
-        return status_response.get("status", "UNKNOWN")
+        job_status = status_response.get("status", "UNKNOWN")
+        logger.debug(f"RunPodJob[{self.job_id}]: status={job_status}")
+        return job_status
 
     def stream(self):
         """Stream job results"""
+        iter_n = 0
         while True:
+            iter_n += 1
+            logger.debug(f"RunPodJob[{self.job_id}]: stream iter={iter_n} GET /stream")
+            t0 = time.monotonic()
             response = requests.get(
                 f"{self.base_url}/stream/{self.job_id}",
                 headers=self.headers,
-                stream=True
+                stream=True,
             )
+            logger.debug(f"RunPodJob[{self.job_id}]: stream iter={iter_n} headers HTTP {response.status_code} in {time.monotonic()-t0:.2f}s")
             response.raise_for_status()
 
             # Expect a single response
             try:
-                content = response.content.decode('utf-8')
+                t1 = time.monotonic()
+                raw = response.content
+                logger.debug(f"RunPodJob[{self.job_id}]: stream iter={iter_n} body read bytes={len(raw)} in {time.monotonic()-t1:.2f}s")
+                content = raw.decode('utf-8')
                 data = json.loads(content)
-                if data['status'] not in ['IN_PROGRESS', 'COMPLETED']:
+                job_status = data['status']
+                stream_block = data.get('stream', []) or []
+                logger.debug(f"RunPodJob[{self.job_id}]: stream iter={iter_n} parsed job_status={job_status} stream_items={len(stream_block)}")
+
+                if job_status not in ['IN_PROGRESS', 'COMPLETED']:
+                    logger.debug(f"RunPodJob[{self.job_id}]: stream iter={iter_n} non-progress status={job_status}, breaking")
                     break
 
+                yielded_segments = 0
+                yielded_progress = 0
                 for item in data['stream']:
                     if 'output' in item:
                         for entry in item['output']:
@@ -1266,25 +1290,33 @@ class RunPodJob:
                                 for element in entry['data']:
                                     try:
                                         yield Segment(**element)
+                                        yielded_segments += 1
                                     except Exception as e:
                                         logger.error(f"Failed to decode RunPod stream element: {e}")
                                         raise Exception(f"Failed to decode JSON: {e}")
                             elif entry['type'] == 'progress':
                                 yield {"progress": entry['data']}
+                                yielded_progress += 1
+
+                logger.debug(f"RunPodJob[{self.job_id}]: stream iter={iter_n} yielded segments={yielded_segments} progress={yielded_progress}")
 
                 if data['status'] == 'COMPLETED':
+                    logger.debug(f"RunPodJob[{self.job_id}]: stream COMPLETED after iter={iter_n}")
                     return
 
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse RunPod JSON response: {e}")
+                logger.error(f"RunPodJob[{self.job_id}]: failed to parse stream JSON: {e}")
                 return
 
     def cancel(self):
         """Cancel the job"""
+        logger.debug(f"RunPodJob[{self.job_id}]: POST /cancel")
+        t0 = time.monotonic()
         response = requests.post(
             f"{self.base_url}/cancel/{self.job_id}",
-            headers=self.headers
+            headers=self.headers,
         )
+        logger.debug(f"RunPodJob[{self.job_id}]: cancel HTTP {response.status_code} in {time.monotonic()-t0:.2f}s")
         response.raise_for_status()
 
         return response.json()
@@ -1562,10 +1594,17 @@ class RunPodModel(TranscriptionModel):
 
         # Collect streaming results
         timeouts = 0
+        loop_iter = 0
+        job_id = run_request.job_id
         while True:
+            loop_iter += 1
+            logger.debug(f"transcribe_core[{job_id}]: stream loop iter={loop_iter} timeouts={timeouts}")
             try:
+                seg_count = 0
+                prog_count = 0
                 for stream_item in run_request.stream():
                     if isinstance(stream_item, Segment):
+                        seg_count += 1
                         yield stream_item
                     elif isinstance(stream_item, dict) and "progress" in stream_item:
                         # Worker-emitted progress dict; pass through
@@ -1579,10 +1618,12 @@ class RunPodModel(TranscriptionModel):
                                 worker_progress,
                             )
                         invoke_progress(on_progress, worker_progress)
+                        prog_count += 1
                     else:
                         raise Exception(f"RunPod error: {stream_item}")
 
                 # If we get here, streaming is complete
+                logger.debug(f"transcribe_core[{job_id}]: stream() returned cleanly iter={loop_iter} segments={seg_count} progress={prog_count}")
                 run_request = None
                 break
 
