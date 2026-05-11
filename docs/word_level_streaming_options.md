@@ -197,15 +197,22 @@ can reliably expose word timestamps.
 
 ## References
 
-- `SYSTRAN/faster-whisper`: `word_timestamps=True` extracts word-level
-  timestamps using cross-attention.
-- `ufal/whisper_streaming`: local-agreement streaming over repeated Whisper
-  hypotheses.
-- Machacek, Dabre, and Bojar, "Turning Whisper into Real-Time Transcription
-  System": describes Whisper-Streaming and reports 3.3 second average latency on
-  an English long-form ASR benchmark.
-- `ggml-org/whisper.cpp`: includes a `stream` example and timestamped segment
-  output, but ivrit's current Python wrapper should still treat it as
+- [`SYSTRAN/faster-whisper`](https://github.com/SYSTRAN/faster-whisper):
+  `word_timestamps=True` extracts word-level timestamps using cross-attention
+  and dynamic time warping.
+- [`ufal/whisper_streaming`](https://github.com/ufal/whisper_streaming):
+  local-agreement streaming over repeated Whisper hypotheses.
+- Machacek, Dabre, and Bojar,
+  ["Turning Whisper into Real-Time Transcription System"](https://aclanthology.org/2023.ijcnlp-demo.3/):
+  describes Whisper-Streaming and reports 3.3 second average latency on an
+  English long-form ASR benchmark.
+- [`ggml-org/whisper.cpp` stream example](https://github.com/ggml-org/whisper.cpp/tree/master/examples/stream):
+  demonstrates repeated microphone-window transcription and VAD-driven sliding
+  window mode, but ivrit's current Python wrapper should still treat it as
   segment-first.
-- WhisperX: strong word-level alignment reference, best used as a quality
-  post-processing option rather than the first low-latency path.
+- [`jianfch/stable-ts`](https://github.com/jianfch/stable-ts): improves Whisper
+  timestamp reliability and is best treated as a quality-oriented path rather
+  than the first low-latency mechanism.
+- [`m-bain/whisperX`](https://github.com/m-bain/whisperX): strong word-level
+  alignment reference, best used as a quality post-processing option rather than
+  the first low-latency path.
