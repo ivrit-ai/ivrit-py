@@ -56,6 +56,16 @@ def _copy_segment_extra_data(segment, language: Optional[str] = None) -> dict:
     return extra_data
 
 
+def _default_output_options(output_options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return the public transcription output defaults."""
+    if output_options is None:
+        output_options = {}
+    return {
+        'word_timestamps': output_options.get('word_timestamps', True),
+        'extra_data': output_options.get('extra_data', True),
+    }
+
+
 class TranscriptionSession(ABC):
     """
     Abstract base class for incremental transcription sessions.
@@ -238,15 +248,7 @@ class TranscriptionModel(ABC):
         if stream and diarize:
             raise ValueError("Streaming (stream=True) is not compatible with diarization (diarize=True). Diarization requires processing all segments before speaker assignment.")
 
-        # Default output options if not provided
-        if output_options is None:
-            output_options = {}
-        
-        # Set defaults for output options
-        output_options = {
-            'word_timestamps': output_options.get('word_timestamps', True),
-            'extra_data': output_options.get('extra_data', True),
-        }
+        output_options = _default_output_options(output_options)
 
         # Get streaming results from the model
         segments_generator = self.transcribe_core(path=path, url=url, blob=blob, language=language, diarize=diarize, diarization_args=diarization_args, output_options=output_options, verbose=verbose, on_progress=on_progress, **kwargs)
@@ -363,15 +365,7 @@ class TranscriptionModel(ABC):
         if len(provided_args) == 0:
             raise ValueError("Must specify either 'path', 'url', or 'blob'")
 
-        # Default output options if not provided
-        if output_options is None:
-            output_options = {}
-        
-        # Set defaults for output options
-        output_options = {
-            'word_timestamps': output_options.get('word_timestamps', True),
-            'extra_data': output_options.get('extra_data', True),
-        }
+        output_options = _default_output_options(output_options)
 
         # Define the synchronous function to run in thread
         def run_transcription():
@@ -389,6 +383,47 @@ class TranscriptionModel(ABC):
         # Yield segments
         for segment in segments:
             yield segment
+
+    def transcribe_pcm(
+        self,
+        *,
+        pcm_bytes: bytes,
+        sample_rate: int,
+        language: Optional[str] = None,
+        output_options: Optional[Dict[str, Any]] = None,
+        verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
+        **kwargs,
+    ) -> Generator[Segment, None, None]:
+        """
+        Transcribe raw mono PCM s16le audio.
+
+        The default implementation preserves the old session behavior by
+        wrapping the PCM buffer as a WAV blob and routing through
+        transcribe_core(). Engines can override this to avoid encode/decode
+        overhead when they accept already-decoded waveforms.
+        """
+        output_options = _default_output_options(output_options)
+
+        wav_buffer = io.BytesIO()
+        try:
+            with wave.open(wav_buffer, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sample_rate)
+                wf.writeframes(pcm_bytes)
+
+            wav_blob = base64.b64encode(wav_buffer.getvalue()).decode('utf-8')
+            yield from self.transcribe_core(
+                blob=wav_blob,
+                language=language,
+                output_options=output_options,
+                verbose=verbose,
+                on_progress=on_progress,
+                **kwargs,
+            )
+        finally:
+            wav_buffer.close()
 
 
 def get_device_and_index(device: str) -> tuple[str, Optional[int]]:
@@ -573,29 +608,13 @@ class WhisperSession(TranscriptionSession):
         if not flush and len(self.pcm_bytes_buffer) < min_bytes:
             return []
         
-        # Create in-memory WAV buffer from raw PCM bytes
-        wav_buffer = io.BytesIO()
-        
         try:
-            # Create WAV data in memory
-            with wave.open(wav_buffer, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(self.sample_rate)
-                wf.writeframes(bytes(self.pcm_bytes_buffer))
-            
-            # Get WAV bytes and convert to base64 blob for all models
-            # This eliminates temporary file creation and uses utils.get_audio_file_path blob handling
-            wav_bytes = wav_buffer.getvalue()
-            import base64
-            wav_blob = base64.b64encode(wav_bytes).decode('utf-8')
-            
-            # Use the model's transcribe_core method with blob for all model types
-            # This works uniformly since all models support blob via utils.get_audio_file_path
-            all_segments = list(self.model.transcribe_core(
-                blob=wav_blob,
+            all_segments = list(self.model.transcribe_pcm(
+                pcm_bytes=bytes(self.pcm_bytes_buffer),
+                sample_rate=self.sample_rate,
                 language=self.language,
-                verbose=self.verbose
+                output_options={'word_timestamps': True, 'extra_data': True},
+                verbose=self.verbose,
             ))
             
             # Handle buffer trimming and segment filtering based on flush parameter
@@ -628,9 +647,6 @@ class WhisperSession(TranscriptionSession):
         except Exception as e:
             logger.error(f"Error during session buffer transcription: {e}")
             return []
-        finally:
-            # Close the WAV buffer
-            wav_buffer.close()
 
 
 class FasterWhisperModel(TranscriptionModel):
@@ -717,6 +733,100 @@ class FasterWhisperModel(TranscriptionModel):
         
         return session
 
+    def _iter_faster_whisper_segments(
+        self,
+        segments,
+        info,
+        *,
+        language: Optional[str],
+        output_options: Dict[str, Any],
+        on_progress: Optional[ProgressCallback],
+    ) -> Generator[Segment, None, None]:
+        total_seconds = getattr(info, "duration", None)
+
+        for segment in segments:
+            segment_extra_data = _copy_segment_extra_data(segment, language=language) if output_options['extra_data'] else {}
+
+            segment_words = []
+            if output_options['word_timestamps'] and hasattr(segment, 'words') and segment.words:
+                for word_data in segment.words:
+                    word = Word(
+                        word=word_data.word,
+                        start=word_data.start,
+                        end=word_data.end,
+                        probability=getattr(word_data, 'probability', None)
+                    )
+                    segment_words.append(word)
+
+            segment_obj = Segment(
+                text=segment.text,
+                start=segment.start,
+                end=segment.end,
+                words=segment_words,
+                extra_data=segment_extra_data
+            )
+
+            emit_progress(
+                on_progress,
+                phase="transcription",
+                step="decode",
+                step_fraction=segment.end / total_seconds if total_seconds else 0.0,
+                description="Transcribing audio",
+                processed_seconds=segment.end,
+                total_seconds=total_seconds,
+            )
+
+            yield segment_obj
+
+    def transcribe_pcm(
+        self,
+        *,
+        pcm_bytes: bytes,
+        sample_rate: int,
+        language: Optional[str] = None,
+        output_options: Optional[Dict[str, Any]] = None,
+        verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
+        **kwargs,
+    ) -> Generator[Segment, None, None]:
+        output_options = _default_output_options(output_options)
+
+        if sample_rate != utils.SAMPLE_RATE:
+            yield from super().transcribe_pcm(
+                pcm_bytes=pcm_bytes,
+                sample_rate=sample_rate,
+                language=language,
+                output_options=output_options,
+                verbose=verbose,
+                on_progress=on_progress,
+                **kwargs,
+            )
+            return
+
+        modules = utils.check_dependencies(['numpy'], 'FasterWhisperModel PCM transcription')
+        np = modules['numpy']
+        audio = np.frombuffer(pcm_bytes, dtype=np.dtype("<i2")).astype(np.float32) / 32768.0
+
+        if verbose:
+            logger.info(
+                "Using faster-whisper direct PCM path with %.2fs of audio",
+                len(pcm_bytes) / (2 * sample_rate),
+            )
+
+        segments, info = self.model_object.transcribe(
+            audio,
+            language=language,
+            word_timestamps=output_options['word_timestamps'],
+            **kwargs,
+        )
+        yield from self._iter_faster_whisper_segments(
+            segments,
+            info,
+            language=language,
+            output_options=output_options,
+            on_progress=on_progress,
+        )
+
     def transcribe_core(
         self,
         *,
@@ -726,7 +836,7 @@ class FasterWhisperModel(TranscriptionModel):
         language: Optional[str] = None,
         diarize: bool = False,
         diarization_args: Optional[Dict[str, Any]] = None,
-        output_options: Dict[str, Any],
+        output_options: Optional[Dict[str, Any]] = None,
         verbose: bool = False,
         on_progress: Optional[ProgressCallback] = None,
         **kwargs,
@@ -738,6 +848,7 @@ class FasterWhisperModel(TranscriptionModel):
         if diarize:
             raise NotImplementedError("Diarization (diarize=True) is only supported with StableWhisper models. "
                                     "Please use StableWhisperModel or RunPodModel with core_engine='stable-whisper'.")
+        output_options = _default_output_options(output_options)
 
         # Handle URL download or blob processing if needed
         audio_path = utils.get_audio_file_path(path=path, url=url, blob=blob, verbose=verbose)
@@ -754,46 +865,17 @@ class FasterWhisperModel(TranscriptionModel):
             # Transcribe using faster-whisper directly with file path
             # Enable word timestamps if requested
             segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
-            total_seconds = getattr(info, "duration", None)
 
             # Collect segments for diarization if needed
             all_segments = [] if diarize else None
 
-            for segment in segments:
-                # Build extra_data dictionary if requested
-                segment_extra_data = _copy_segment_extra_data(segment, language=language) if output_options['extra_data'] else {}
-
-                # Process words if available and requested
-                segment_words = []
-                if output_options['word_timestamps'] and hasattr(segment, 'words') and segment.words:
-                    for word_data in segment.words:
-                        word = Word(
-                            word=word_data.word,
-                            start=word_data.start,
-                            end=word_data.end,
-                            probability=getattr(word_data, 'probability', None)
-                        )
-                        segment_words.append(word)
-
-                # Create Segment object
-                segment_obj = Segment(
-                    text=segment.text,
-                    start=segment.start,
-                    end=segment.end,
-                    words=segment_words,
-                    extra_data=segment_extra_data
-                )
-
-                emit_progress(
-                    on_progress,
-                    phase="transcription",
-                    step="decode",
-                    step_fraction=segment.end / total_seconds if total_seconds else 0.0,
-                    description="Transcribing audio",
-                    processed_seconds=segment.end,
-                    total_seconds=total_seconds,
-                )
-
+            for segment_obj in self._iter_faster_whisper_segments(
+                segments,
+                info,
+                language=language,
+                output_options=output_options,
+                on_progress=on_progress,
+            ):
                 if diarize:
                     all_segments.append(segment_obj)
                 else:
