@@ -87,6 +87,23 @@ asyncio.run(transcribe_async())
 
 **Note**: Async transcription is only available for RunPod models. The sync `transcribe()` method uses the original sync implementation.
 
+#### RunPod Payload Size Limits
+
+RunPod endpoints have a **10 MB payload size limit**. When transcribing large audio files via `blob` or `path`, the base64-encoded audio data must fit within this limit. If the payload exceeds 10 MB, a `ValueError` is raised.
+
+**Workarounds for large files:**
+
+1. **Use a URL** — Upload the audio file to a temporary hosting service (e.g., S3 presigned URL, Cloudflare R2) and pass the `url` parameter instead of `path` or `blob`. This avoids base64 encoding overhead entirely:
+   ```python
+   model.transcribe(url="https://your-bucket.example.com/audio.mp3")
+   ```
+
+2. **Chunk the audio** — Split large audio files into smaller segments (e.g., 30-minute chunks) and transcribe each separately, then merge the results.
+
+3. **Compress the audio** — Re-encode the audio to a lower bitrate (e.g., MP3 at 64 kbps) before transcription to reduce file size below the 10 MB threshold.
+
+4. **Use a direct RunPod endpoint** — For files that consistently exceed the limit, consider calling the RunPod endpoint directly with multipart upload support instead of using the ivrit `blob` transport.
+
 ## API Reference
 
 ### `load_model()`
