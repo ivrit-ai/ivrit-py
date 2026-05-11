@@ -250,6 +250,10 @@ Here's how this works:
 You can use any tool you'd like to write your code, including AI.
 Note that during review you will be asked questions about the code; if you are unable to explain what it does, or how (sometimes the case when doing Vibe coding), your PR will be discarded and you will not be able to reapply for this issue.
 
+## Design Notes
+
+- [Word-level streaming options](docs/word_level_streaming_options.md)
+
 Reviews may be done live.
 
 ## License
