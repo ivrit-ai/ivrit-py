@@ -90,6 +90,13 @@ layers. Engine-specific data that doesn't fit the schema lives in
 - **`WhisperSession`** is the shared session implementation reused by both
   faster-whisper and stable-whisper. It buffers PCM frames and emits segments
   with confidence-based filtering, deferring final segments until `flush()`.
+- **`FasterWhisperModel` batched path** — when `transcribe(..., batch_size=N)`
+  is called with `N > 1`, the wrapper switches from
+  `faster_whisper.WhisperModel.transcribe` to
+  `faster_whisper.BatchedInferencePipeline.transcribe` while keeping the
+  public `ivrit` API unchanged. Additional transcription kwargs such as
+  `beam_size`, `vad_filter`, and `batch_size` are forwarded to the
+  faster-whisper backend call.
 - **`RunPodJob` / `AsyncRunPodJob`** are the sync/async polling helpers that wrap
   a RunPod inference job and stream results back as they become available.
   The RunPod stream protocol carries two kinds of items inside `data['stream']`:
