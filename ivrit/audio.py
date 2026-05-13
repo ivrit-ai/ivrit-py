@@ -10,6 +10,7 @@ import logging
 import os
 import time
 import io
+import threading
 import wave
 from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Generator, Optional, Union, List, Dict
@@ -1413,14 +1414,98 @@ class AsyncRunPodJob:
                 return await response.json()
 
 
+class RunPodSessionManager:
+    """
+    Keep a lightweight heartbeat running so a RunPod-backed session can stay warm
+    across a burst of transcription requests.
+    """
+
+    def __init__(self, api_key: str, endpoint_id: str, keep_alive_interval: float = 30.0):
+        self.base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        self.keep_alive_interval = keep_alive_interval
+        self._active = False
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._last_job_id: Optional[str] = None
+        self._stop_event = threading.Event()
+
+    @property
+    def last_job_id(self) -> Optional[str]:
+        with self._lock:
+            return self._last_job_id
+
+    def note_job(self, job_id: Optional[str]) -> None:
+        if not job_id:
+            return
+        with self._lock:
+            self._last_job_id = job_id
+
+    def start(self) -> None:
+        with self._lock:
+            if self._active:
+                return
+            self._active = True
+            self._stop_event.clear()
+            self._thread = threading.Thread(
+                target=self._heartbeat_loop,
+                name="runpod-session-keepalive",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def close(self) -> None:
+        thread = None
+        with self._lock:
+            self._active = False
+            thread = self._thread
+            self._thread = None
+            self._stop_event.set()
+        if thread and thread.is_alive():
+            thread.join(timeout=1.0)
+
+    def _heartbeat_loop(self) -> None:
+        while True:
+            with self._lock:
+                if not self._active:
+                    return
+                job_id = self._last_job_id
+
+            if job_id:
+                try:
+                    requests.get(
+                        f"{self.base_url}/status/{job_id}",
+                        headers=self.headers,
+                        timeout=5,
+                    ).raise_for_status()
+                except Exception as exc:
+                    logger.debug("RunPod session keep-alive failed for %s: %s", job_id, exc)
+
+            if self._stop_event.wait(self.keep_alive_interval):
+                return
+
+
 class RunPodModel(TranscriptionModel):
     """RunPod transcription model"""
     
-    def __init__(self, model: str, api_key: str, endpoint_id: str, core_engine: str = "faster-whisper"):
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        endpoint_id: str,
+        core_engine: str = "faster-whisper",
+        use_persistent_session: bool = True,
+        keep_alive_interval: float = 30.0,
+    ):
         super().__init__(engine="runpod", model=model)
         
         self.api_key = api_key
         self.endpoint_id = endpoint_id
+        self.use_persistent_session = use_persistent_session
+        self._keep_alive_interval = keep_alive_interval
         
         # Validate core engine
         if core_engine not in ["faster-whisper", "stable-whisper"]:
@@ -1432,6 +1517,19 @@ class RunPodModel(TranscriptionModel):
         self.IN_QUEUE_TIMEOUT = 300
         self.MAX_STREAM_TIMEOUTS = 5
         self.RUNPOD_MAX_PAYLOAD_LEN = 10 * 1024 * 1024
+        self._session_manager = (
+            RunPodSessionManager(
+                api_key=api_key,
+                endpoint_id=endpoint_id,
+                keep_alive_interval=keep_alive_interval,
+            )
+            if use_persistent_session
+            else None
+        )
+
+    def close(self) -> None:
+        if self._session_manager is not None:
+            self._session_manager.close()
     
     def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
                       verbose: bool = False) -> TranscriptionSession:
@@ -1462,6 +1560,8 @@ class RunPodModel(TranscriptionModel):
         if verbose:
             logger.info(f"Created RunPod transcription session: {session_id}")
             logger.info("Note: RunPod sessions buffer audio locally and transcribe on flush()")
+            if self._session_manager is not None:
+                logger.info("Persistent RunPod keep-alive is enabled for this model")
         
         return session
 
@@ -1546,6 +1646,9 @@ class RunPodModel(TranscriptionModel):
 
         # Create and execute RunPod job
         run_request = RunPodJob(self.api_key, self.endpoint_id, payload)
+        if self._session_manager is not None:
+            self._session_manager.note_job(run_request.job_id)
+            self._session_manager.start()
         
         # Wait for task to be queued
         if verbose:
@@ -1771,6 +1874,9 @@ class RunPodModel(TranscriptionModel):
         
         # Submit the job
         await run_request.submit()
+        if self._session_manager is not None:
+            self._session_manager.note_job(run_request.job_id)
+            self._session_manager.start()
         
         # Wait for task to be queued
         if verbose:
