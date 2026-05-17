@@ -1321,6 +1321,19 @@ class RunPodJob:
 
         return response.json()
 
+    def get_timings(self):
+        """Fetch RunPod billing timings (delayTime/executionTime, in ms) from /status."""
+        response = requests.get(
+            f"{self.base_url}/status/{self.job_id}",
+            headers=self.headers,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "queue_ms": data.get("delayTime"),
+            "execution_ms": data.get("executionTime"),
+        }
+
 
 class AsyncRunPodJob:
     """Async version of RunPodJob for better scalability with high concurrency."""
@@ -1353,6 +1366,7 @@ class AsyncRunPodJob:
                 response.raise_for_status()
                 result = await response.json()
                 self.job_id = result.get("id")
+                logger.debug(f"AsyncRunPodJob[{self.job_id}]: submitted")
 
     async def status(self):
         """Get job status asynchronously"""
@@ -1411,6 +1425,20 @@ class AsyncRunPodJob:
             ) as response:
                 response.raise_for_status()
                 return await response.json()
+
+    async def get_timings(self):
+        """Fetch RunPod billing timings (delayTime/executionTime, in ms) from /status."""
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{self.base_url}/status/{self.job_id}",
+                headers=self.headers
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return {
+                    "queue_ms": data.get("delayTime"),
+                    "execution_ms": data.get("executionTime"),
+                }
 
 
 class RunPodModel(TranscriptionModel):
@@ -1624,6 +1652,16 @@ class RunPodModel(TranscriptionModel):
 
                 # If we get here, streaming is complete
                 logger.debug(f"transcribe_core[{job_id}]: stream() returned cleanly iter={loop_iter} segments={seg_count} progress={prog_count}")
+
+                # Log RunPod billing timings (authoritative — same fields RunPod bills on)
+                try:
+                    timings = run_request.get_timings()
+                    logger.debug(
+                        f"RunPod[{job_id}] billing: queue={timings['queue_ms']}ms execution={timings['execution_ms']}ms"
+                    )
+                except Exception as e:
+                    logger.warning(f"RunPod[{job_id}]: failed to fetch billing timings: {e}")
+
                 run_request = None
                 break
 
@@ -1839,7 +1877,16 @@ class RunPodModel(TranscriptionModel):
                     else:
                         raise Exception(f"RunPod error: {stream_item}")
 
-                # If we get here, streaming is complete
+                # If we get here, streaming is complete.
+                # Log RunPod billing timings (authoritative — same fields RunPod bills on).
+                try:
+                    timings = await run_request.get_timings()
+                    logger.debug(
+                        f"RunPod[{run_request.job_id}] billing: queue={timings['queue_ms']}ms execution={timings['execution_ms']}ms"
+                    )
+                except Exception as e:
+                    logger.warning(f"RunPod[{run_request.job_id}]: failed to fetch billing timings: {e}")
+
                 run_request = None
                 break
             except aiohttp.ClientError as e:
