@@ -60,6 +60,24 @@ for segment in model.transcribe(path="audio.mp3", stream=True):
         print(f"  {word['start']:.2f}s - {word['end']:.2f}s: '{word['word']}'")
 ```
 
+#### Batched faster-whisper transcription
+
+For faster-whisper, you can pass `batch_size` through `transcribe()` to switch
+to the backend's batched inference path:
+
+```python
+model = ivrit.load_model(
+    engine="faster-whisper",
+    model="ivrit-ai/whisper-large-v3-turbo-ct2",
+)
+
+result = model.transcribe(
+    path="audio.mp3",
+    language="he",
+    batch_size=8,
+)
+```
+
 #### Async Transcription (RunPod Only)
 
 For RunPod models, you can use async transcription for better performance:
@@ -122,7 +140,7 @@ Transcribe audio using the loaded model.
 - **stream** (`bool`, optional): Whether to return results as a generator (True) or full result (False) - only for `transcribe()`
 - **diarize** (`bool`, optional): Whether to enable speaker diarization
 - **verbose** (`bool`, optional): Whether to enable verbose output
-- **\*\*kwargs**: Additional keyword arguments for the transcription model
+- **\*\*kwargs**: Additional keyword arguments forwarded to the transcription backend. For `faster-whisper`, this includes options such as `batch_size`, `beam_size`, and `vad_filter`.
 
 #### Returns
 

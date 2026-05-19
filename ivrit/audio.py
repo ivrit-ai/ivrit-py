@@ -646,6 +646,7 @@ class FasterWhisperModel(TranscriptionModel):
         self.device = device if device else utils.guess_device()
         self.local_files_only = local_files_only
         self.model_kwargs = kwargs
+        self._batched_model = None
         
         # Load the model immediately
         self.model_object = self._load_faster_whisper_model()
@@ -689,6 +690,32 @@ class FasterWhisperModel(TranscriptionModel):
         
         logger.info(f'Loading faster-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return faster_whisper.WhisperModel(self.model_path, **args)
+
+    def _get_faster_whisper_transcriber(self, batch_size: Any = None) -> Any:
+        """
+        Return the appropriate faster-whisper transcriber implementation.
+
+        When batch_size > 1, use faster-whisper's BatchedInferencePipeline.
+        Otherwise, keep using the plain WhisperModel path.
+        """
+        should_batch = False
+        if batch_size is not None:
+            try:
+                should_batch = int(batch_size) > 1
+            except (TypeError, ValueError):
+                should_batch = True
+
+        if not should_batch:
+            return self.model_object
+
+        if self._batched_model is None:
+            import faster_whisper
+
+            self._batched_model = faster_whisper.BatchedInferencePipeline(
+                model=self.model_object
+            )
+
+        return self._batched_model
     
     def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
                       verbose: bool = False) -> TranscriptionSession:
@@ -751,9 +778,16 @@ class FasterWhisperModel(TranscriptionModel):
                 logger.info("Diarization is enabled")
 
         try:
-            # Transcribe using faster-whisper directly with file path
-            # Enable word timestamps if requested
-            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
+            transcribe_kwargs = {
+                "language": language,
+                "word_timestamps": output_options["word_timestamps"],
+            }
+            transcribe_kwargs.update(kwargs)
+
+            transcriber = self._get_faster_whisper_transcriber(
+                transcribe_kwargs.get("batch_size")
+            )
+            segments, info = transcriber.transcribe(audio_path, **transcribe_kwargs)
             total_seconds = getattr(info, "duration", None)
 
             # Collect segments for diarization if needed
