@@ -636,7 +636,14 @@ class WhisperSession(TranscriptionSession):
 class FasterWhisperModel(TranscriptionModel):
     """Faster Whisper transcription model"""
     
-    def __init__(self, model: str, device: str = None, local_files_only: bool = False, **kwargs):
+    def __init__(
+        self,
+        model: str,
+        device: str = None,
+        local_files_only: bool = False,
+        predecode_audio: bool = True,
+        **kwargs,
+    ):
         super().__init__(engine="faster-whisper", model=model)
         
         # Check for required dependencies
@@ -645,6 +652,7 @@ class FasterWhisperModel(TranscriptionModel):
         self.model_path = model
         self.device = device if device else utils.guess_device()
         self.local_files_only = local_files_only
+        self.predecode_audio = predecode_audio
         self.model_kwargs = kwargs
         
         # Load the model immediately
@@ -751,9 +759,25 @@ class FasterWhisperModel(TranscriptionModel):
                 logger.info("Diarization is enabled")
 
         try:
-            # Transcribe using faster-whisper directly with file path
-            # Enable word timestamps if requested
-            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
+            # Pre-decode through ffmpeg and pass a float32 waveform directly to
+            # faster-whisper. This avoids faster-whisper's Python-side file
+            # decode path for the common local-file case. If local decoding is
+            # unavailable, keep the older path-based behavior.
+            audio_input = audio_path
+            if self.predecode_audio:
+                try:
+                    audio_input = utils.load_audio(audio_path)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to pre-decode audio for faster-whisper; falling back to path input: %s",
+                        e,
+                    )
+
+            segments, info = self.model_object.transcribe(
+                audio_input,
+                language=language,
+                word_timestamps=output_options['word_timestamps'],
+            )
             total_seconds = getattr(info, "duration", None)
 
             # Collect segments for diarization if needed

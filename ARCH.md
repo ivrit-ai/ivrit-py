@@ -90,6 +90,11 @@ layers. Engine-specific data that doesn't fit the schema lives in
 - **`WhisperSession`** is the shared session implementation reused by both
   faster-whisper and stable-whisper. It buffers PCM frames and emits segments
   with confidence-based filtering, deferring final segments until `flush()`.
+- **`FasterWhisperModel`** pre-decodes audio files through `utils.load_audio()`
+  and passes the resulting mono 16 kHz float32 waveform directly to
+  faster-whisper. This avoids faster-whisper's file decoding path in the common
+  local-file flow. If local ffmpeg-based decoding is unavailable, it logs a
+  warning and falls back to passing the file path to faster-whisper.
 - **`RunPodJob` / `AsyncRunPodJob`** are the sync/async polling helpers that wrap
   a RunPod inference job and stream results back as they become available.
   The RunPod stream protocol carries two kinds of items inside `data['stream']`:
