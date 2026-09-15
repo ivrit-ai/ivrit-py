@@ -1066,7 +1066,12 @@ class FasterWhisperModel(TranscriptionModel):
         try:
             # Transcribe using faster-whisper directly with file path
             # Enable word timestamps if requested
-            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
+            transcribe_args = {
+                'language': language,
+                'word_timestamps': output_options['word_timestamps'],
+                **kwargs
+            }
+            segments, info = self.model_object.transcribe(audio_path, **transcribe_args)
             total_seconds = getattr(info, "duration", None)
 
             # Collect segments for diarization if needed
