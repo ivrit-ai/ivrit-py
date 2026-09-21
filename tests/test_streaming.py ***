@@ -1,0 +1,74 @@
++from types import SimpleNamespace
++
++from ivrit.streaming import (
++    RepeatTranscribeStreamer,
++    WordHypothesis,
++    pass_quality_ok,
++    segments_to_words,
++    stable_prefix,
++    word_confidence_ok,
++)
++
++
++def _w(text, prob=0.9):
++    return WordHypothesis(text=text, start=0.0, end=1.0, probability=prob)
++
++
++def test_stable_prefix():
++    assert stable_prefix(["a", "b"], ["a", "c"]) == 1
++    assert stable_prefix([], ["a"]) == 0
++
++
++def test_confidence_gate_rejects_low_prob():
++    assert not word_confidence_ok(_w("x", prob=0.1))
++    assert word_confidence_ok(_w("x", prob=0.9))
++
++
++def test_pass_quality_rejects_repetition_loop():
++    assert not pass_quality_ok(avg_logprob=-0.2, no_speech_prob=0.1, compression_ratio=3.0)
++    assert pass_quality_ok(avg_logprob=-0.2, no_speech_prob=0.1, compression_ratio=1.2)
++
++
++def test_commit_requires_stability_and_holdback():
++    s = RepeatTranscribeStreamer(stability_window=2, hold_back_words=1)
++    words = [_w("a"), _w("b"), _w("c")]
++    committed, _ = s.update(words)
++    assert committed == []  # first pass: nothing stable yet
++    committed, preview = s.update(words)
++    assert [w.text for w in committed] == ["a", "b"]
++    assert [w.text for w in preview] == ["c"]
++
++
++def test_revision_keeps_stable_prefix_only():
++    s = RepeatTranscribeStreamer(stability_window=2, hold_back_words=0)
++    s.update([_w("a"), _w("b")])
++    committed, preview = s.update([_w("a"), _w("CHANGED")])
++    assert [w.text for w in committed] == ["a"]
++    assert [w.text for w in preview] == ["CHANGED"]
++
++
++def test_flush_commits_tail():
++    s = RepeatTranscribeStreamer(stability_window=99, hold_back_words=99)
++    words = [_w("a"), _w("b")]
++    s.update(words)
++    flushed = s.flush(words)
++    assert [w.text for w in flushed] == ["a", "b"]
++    assert s.committed_count == 2
++
++
++def test_segments_to_words_reads_extra_data():
++    seg = SimpleNamespace(
++        text="שלום עולם",
++        extra_data={
++            "avg_logprob": -0.2,
++            "no_speech_prob": 0.01,
++            "words": [
++                {"word": "שלום", "start": 0.0, "end": 0.4, "probability": 0.9},
++                {"word": "עולם", "start": 0.4, "end": 0.8, "probability": 0.8},
++            ],
++        },
++    )
++    words = segments_to_words([seg])
++    assert [w.text for w in words] == ["שלום", "עולם"]
++    assert words[0].avg_logprob == -0.2
++

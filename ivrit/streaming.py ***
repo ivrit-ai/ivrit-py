@@ -1,0 +1,177 @@
++"""Word-level streaming via repeated transcribe + confidence gating.
++
++Implements option A from ``docs/streaming-word-level-analysis.md``.
++No extra dependencies: accepts faster-whisper-style word objects or
++ivrit ``Segment`` values (words on the segment or in ``extra_data``).
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++from typing import Any, Dict, Iterable, List, Optional, Tuple
++
++
++@dataclass
++class WordHypothesis:
++    text: str
++    start: float
++    end: float
++    probability: float = 1.0
++    avg_logprob: float = 0.0
++    no_speech_prob: float = 0.0
++    compression_ratio: float = 1.0
++
++
++def word_confidence_ok(
++    word: WordHypothesis,
++    min_word_probability: float = 0.5,
++    min_avg_logprob: float = -1.0,
++    max_no_speech_prob: float = 0.6,
++) -> bool:
++    """Return True when a single word hypothesis passes confidence gates."""
++    return (
++        word.probability >= min_word_probability
++        and word.avg_logprob >= min_avg_logprob
++        and word.no_speech_prob <= max_no_speech_prob
++    )
++
++
++def pass_quality_ok(
++    avg_logprob: float,
++    no_speech_prob: float,
++    compression_ratio: float,
++    min_avg_logprob: float = -1.0,
++    max_no_speech_prob: float = 0.6,
++    max_compression_ratio: float = 2.4,
++) -> bool:
++    """Return True when a whole transcription pass looks usable."""
++    return (
++        avg_logprob >= min_avg_logprob
++        and no_speech_prob <= max_no_speech_prob
++        and compression_ratio <= max_compression_ratio
++    )
++
++
++def stable_prefix(prev: List[str], curr: List[str]) -> int:
++    """Length of longest common word-text prefix between two passes."""
++    n = 0
++    for a, b in zip(prev, curr):
++        if a != b:
++            break
++        n += 1
++    return n
++
++
++@dataclass
++class RepeatTranscribeStreamer:
++    """Stabilize repeated full-context transcriptions into commits.
++
++    Feed each repeated ``transcribe()`` word list to :meth:`update`.
++    Words are committed only after ``stability_window`` consecutive stable
++    passes, passing confidence gates, and surviving ``hold_back_words``.
++    Use :meth:`flush` at end-of-stream to commit the tail unconditionally.
++    """
++
++    stability_window: int = 2
++    min_word_probability: float = 0.5
++    min_avg_logprob: float = -1.0
++    max_no_speech_prob: float = 0.6
++    hold_back_words: int = 2
++
++    _prev_texts: List[str] = field(default_factory=list, repr=False)
++    _stable_counts: List[int] = field(default_factory=list, repr=False)
++    _committed: int = field(default=0, repr=False)
++
++    def update(
++        self, words: List[WordHypothesis]
++    ) -> Tuple[List[WordHypothesis], List[WordHypothesis]]:
++        """Ingest one transcription pass; return (committed_now, preview)."""
++        texts = [w.text for w in words]
++        keep = stable_prefix(self._prev_texts, texts)
++        new_counts: List[int] = []
++        for i in range(len(texts)):
++            if i < keep and i < len(self._stable_counts):
++                new_counts.append(self._stable_counts[i] + 1)
++            else:
++                new_counts.append(1)
++        self._stable_counts = new_counts
++        self._prev_texts = texts
++
++        committed_now: List[WordHypothesis] = []
++        limit = max(0, len(words) - self.hold_back_words)
++        i = self._committed
++        while i < limit:
++            w = words[i]
++            if self._stable_counts[i] >= self.stability_window and word_confidence_ok(
++                w,
++                self.min_word_probability,
++                self.min_avg_logprob,
++                self.max_no_speech_prob,
++            ):
++                committed_now.append(w)
++                i += 1
++            else:
++                break
++        self._committed += len(committed_now)
++        preview = words[self._committed :]
++        return committed_now, preview
++
++    def flush(self, words: List[WordHypothesis]) -> List[WordHypothesis]:
++        """Commit all remaining words regardless of stability/confidence."""
++        remaining = words[self._committed :]
++        self._committed = len(words)
++        self._prev_texts = [w.text for w in words]
++        self._stable_counts = [self.stability_window] * len(words)
++        return remaining
++
++    @property
++    def committed_count(self) -> int:
++        return self._committed
++
++
++def _extra(seg: Any) -> Dict[str, Any]:
++    if isinstance(seg, dict):
++        return seg.get("extra_data") or {}
++    extra = getattr(seg, "extra_data", None)
++    return extra or {}
++
++
++def _segment_words(seg: Any) -> Iterable[Any]:
++    extra = _extra(seg)
++    if isinstance(seg, dict):
++        words = seg.get("words") or extra.get("words")
++    else:
++        words = getattr(seg, "words", None) or extra.get("words")
++    return words or []
++
++
++def _word_field(w: Any, key: str, default: Any) -> Any:
++    if isinstance(w, dict):
++        return w.get(key, default)
++    return getattr(w, key, default)
++
++
++def segments_to_words(segments: Any) -> List[WordHypothesis]:
++    """Flatten ivrit / faster-whisper segments into word hypotheses."""
++    out: List[WordHypothesis] = []
++    for seg in segments or []:
++        extra = _extra(seg)
++        avg_lp = float(extra.get("avg_logprob", 0.0) or 0.0)
++        ns_prob = float(extra.get("no_speech_prob", 0.0) or 0.0)
++        cr = float(extra.get("compression_ratio", 1.0) or 1.0)
++        for w in _segment_words(seg):
++            text = _word_field(w, "word", None)
++            if text is None:
++                text = _word_field(w, "text", "")
++            out.append(
++                WordHypothesis(
++                    text=str(text),
++                    start=float(_word_field(w, "start", 0.0) or 0.0),
++                    end=float(_word_field(w, "end", 0.0) or 0.0),
++                    probability=float(_word_field(w, "probability", 1.0) or 1.0),
++                    avg_logprob=avg_lp,
++                    no_speech_prob=ns_prob,
++                    compression_ratio=cr,
++                )
++            )
++    return out
++
