@@ -1,15 +1,14 @@
 """
-ivrit - Python package providing wrappers around ivrit.ai's capabilities
+Top‑level package for ivrit.
+
+Exports the public API that users interact with, including model loading
+utilities and the newly added word‑level transcription helper.
 """
-from __future__ import annotations
 
-from importlib.metadata import version, PackageNotFoundError
-try:
-    __version__ = version("ivrit")
-except:
-    __version__ = 'dev'
+from .audio import transcribe_word_level
+from .utils import load_model  # Assuming load_model lives in utils.py
 
-from .audio import load_model, TranscriptionModel, TranscriptionSession, FasterWhisperModel, StableWhisperModel, WhisperCppModel, RunPodModel
-from .types import Segment
-
-__all__ = ['load_model', 'TranscriptionModel', 'TranscriptionSession', 'Segment'] 
+__all__ = [
+    "load_model",
+    "transcribe_word_level",
+]
