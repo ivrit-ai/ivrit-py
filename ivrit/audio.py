@@ -1541,7 +1541,7 @@ class RunPodJob:
             raise Exception("Invalid RunPod API key")
 
         if not response.ok:
-            logger.error(f"RunPod job submission failed: HTTP {response.status_code} {response.reason}")
+            logger.error(f"RunPod job submission failed: HTTP {response.status_code} {response.reason}: {response.text[:2000]}")
         response.raise_for_status()
 
         result = response.json()
@@ -1704,7 +1704,8 @@ class AsyncRunPodJob:
                     raise Exception("Invalid RunPod API key")
 
                 if response.status >= 400:
-                    logger.error(f"RunPod async job submission failed: HTTP {response.status}")
+                    body = await response.text(errors="replace")
+                    logger.error(f"RunPod job submission failed: HTTP {response.status} {response.reason}: {body[:2000]}")
                 response.raise_for_status()
                 result = await response.json()
                 self.job_id = result.get("id")
