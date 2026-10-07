@@ -71,6 +71,16 @@ def emit_progress(
 SAMPLE_RATE = 16000
 
 
+def get_ffmpeg_exe() -> str:
+    """Return the best available ffmpeg executable path."""
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
 def check_dependencies(module_specs: List[str], feature_name: str = "This feature") -> Dict[str, Any]:
     """
     Check if required modules are installed and return them.
@@ -189,9 +199,8 @@ def get_audio_duration(path: str) -> Optional[float]:
     """Return the duration in seconds of an audio file using ffmpeg, or None on failure."""
     try:
         import re
-        import imageio_ffmpeg
         result = subprocess.run(
-            [imageio_ffmpeg.get_ffmpeg_exe(), "-i", path, "-f", "null", "-"],
+            [get_ffmpeg_exe(), "-i", path, "-f", "null", "-"],
             capture_output=True, text=True,
         )
         match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", result.stderr)
@@ -224,9 +233,10 @@ def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray:
     
     try:
         # Launches a subprocess to decode audio while down-mixing and resampling as necessary.
-        # Requires the ffmpeg CLI to be installed.
+        # Prefer imageio-ffmpeg's bundled binary when available, with the system
+        # ffmpeg command as a fallback.
         cmd = [
-            "ffmpeg",
+            get_ffmpeg_exe(),
             "-nostdin",
             "-threads",
             "0",
