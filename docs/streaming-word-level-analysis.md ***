@@ -1,0 +1,73 @@
++# Word-level streaming options
++
++`stream=True` today walks segments of an already-complete file. It is a
++generator over offline output, not live low-latency audio. Words, when
++present, live on each segment (`segment.words` or
++`segment.extra_data["words"]`) after that segment has been decoded.
++
++This note compares ways to turn that into a commit/preview word stream,
++with emphasis on repeated `transcribe()` plus confidence gating — the
++only option that needs no extra service or decoder.
++
++## 1. Options
++
++| # | Approach | Latency | Accuracy | Complexity | Hebrew notes |
++|---|----------|---------|----------|------------|--------------|
++| A | Repeated full-buffer `transcribe()` + prefix-diff + confidence gate (`ivrit/streaming.py`) | grows O(n²); fine under ~30s | high (full context each pass) | low, no new deps | `word_timestamps=True` gives the best boundaries; hold back the last 1–2 words — unpointed Hebrew often revises suffixes |
++| B | Rolling window (last 15–30s) + VAD-gated commit | ~1–3s | medium-high | medium | VAD avoids cutting words; needs Silero or WebRTC VAD |
++| C | Online decoders: whisper-streaming (Ufal), whisper_live / SimulStreaming, faster-whisper-server | 0.5–1.5s | medium (causal, more revisions) | high (extra process/GPU) | works for live demos; Hebrew still wants the fine-tuned checkpoint and a local-agreement policy |
++| D | stable-ts / whisperX word-align over offline output | offline only | highest word timing | low | post-hoc timestamps, not live |
++
++## 2. Repeated `transcribe()` with confidence analysis (recommended first step)
++
++Per buffer-growth step:
++
++1. Call `transcribe(..., word_timestamps=True)` on the whole buffer (or a rolling window).
++2. Read per-word `probability` (faster-whisper) and segment `avg_logprob` / `no_speech_prob` / `compression_ratio` from `extra_data`.
++3. Diff the word-text list against the previous pass. Longest common prefix is the candidate stable prefix.
++4. Commit a word only if it sat in that prefix for `N >= 2` consecutive passes, `probability >= min_word_probability` (0.5), and segment `avg_logprob >= min_avg_logprob` (−1.0). Always withhold the trailing `hold_back_words` (2) until `flush()`.
++5. `flush()` commits the tail with no gates.
++
++Whisper is non-causal, so the tail always revises. Repeat-stability plus
++token confidence turns those revisions into a clean commit/preview stream
++without a second stack.
++
++Cost is O(n²) in buffer length. Mitigations: `beam_size=1` (raise to 5
++only on flush), `vad_filter=True`, `condition_on_previous_text=False` on
++short windows, cap at `max_window_seconds` (30) and drop audio already
++committed.
++
++## 3. `transcribe()` knobs for streaming passes
++
++```python
++model.transcribe(
++    path=wav_slice,
++    language="he",
++    beam_size=1,          # speed over search breadth; try 5 only on flush
++    vad_filter=True,      # skip silence; steadies word starts
++    word_timestamps=True, # required for word-level commits
++    condition_on_previous_text=False,
++    without_timestamps=False,
++)
++```
++
++Drop a pass when `no_speech_prob > 0.6`, `compression_ratio > 2.4`
++(repetition loop), or `avg_logprob < -1.0`.
++
++## 4. What to do in this package
++
++1. Land `ivrit.streaming.RepeatTranscribeStreamer`: no extra dependencies,
++   talks to any `TranscriptionModel` via `transcribe_core` / segment
++   objects, exposes `update(words) -> (committed, preview)` and `flush()`.
++2. Next, optional VAD-gated rolling window and `create_session()` wiring,
++   after Hebrew clips (5s → 60s) show RTF and revision rate.
++3. Defer a full online decoder (option C) until (1)–(2) are not enough.
++   It adds a server/GPU dependency for a modest latency gain.
++
++## 5. Benchmark before building further
++
++Time repeated `transcribe()` on lengthening Hebrew clips (5 / 10 / 20 /
++30 / 60s). Record RTF, peak RAM, prefix-revision rate, and the effect of
++`beam_size` 1 vs 5 and `vad_filter` on/off. `tests/test_streaming.py` is
++an offline harness (fake hypotheses, no weights).
++
