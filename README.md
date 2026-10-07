@@ -137,6 +137,36 @@ Transcribe audio using the loaded model.
 
 **Note**: `transcribe_async()` is only available for RunPod models and always returns an AsyncGenerator.
 
+## RunPod Payload Limits
+
+When using the RunPod engine (`engine="runpod"`), each serverless job is bounded
+by RunPod's **10 MB request payload cap** (measured on the JSON UTF-8 wire bytes
+the server receives, not on the raw audio size). If you exceed the cap, the
+endpoint will reject the job before it ever runs.
+
+**What counts toward the cap:** the JSON envelope around your inputs — i.e. the
+base64-encoded audio (or path/url), the language, any extra fields you pass.
+A 10-minute 16 kHz mono PCM s16le audio clip is about 1.9 MB raw but expands
+to ~2.6 MB once base64-encoded, leaving room for the rest of the envelope.
+
+**What you can do when you hit the cap:**
+
+- **Use `url=` instead of `blob=`.** When you pass a URL, only the URL string
+  travels in the payload, not the audio itself. RunPod then downloads the file
+  on the server side, bypassing the cap entirely for any clip you can host
+  somewhere reachable.
+- **Use `path=` for local files.** Path inputs are uploaded separately by the
+  client and don't go through the JSON payload at all.
+- **Split batches.** The batch transcription path (`path=[…]`, `url=[…]`,
+  `blob=[…]`) automatically splits oversized blob batches into multiple
+  sequential RunPod jobs and re-stitches the streamed output, so the caller
+  still sees a single, in-order result.
+- **Resample or shorten the audio.** 8 kHz instead of 16 kHz halves the
+  payload; clipping silence is even better.
+
+**Rule of thumb:** if your single audio input (after base64) plus a few hundred
+bytes of metadata is approaching 10 MB, switch to a URL or split the batch.
+
 ## Architecture
 
 The ivrit package uses an object-oriented design with a base `TranscriptionModel` class and specific implementations for each transcription engine.
