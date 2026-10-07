@@ -1,0 +1,9 @@
+{"path": ".", "type": "dir", "children": [
+  {"path": "ivrit-py", "type": "dir", "children": [
+    {"path": "ivrit", "type": "dir"},
+    {"path": "pyproject.toml", "type": "file"},
+    {"path": "README.md", "type": "file"},
+    {"path": ".git", "type": "dir"},
+    {"path": "setup.py", "type": "file"}
+  ]}
+]}
