@@ -11,6 +11,8 @@ import os
 import time
 import io
 import wave
+import threading
+
 from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Generator, Optional, Union, List, Dict
 from uuid import uuid4
@@ -23,6 +25,46 @@ from .types import Segment, Word
 from .utils import ProgressCallback, emit_progress, invoke_progress
 
 logger = logging.getLogger(__name__)
+class TranscribeCache:
+    """Thread-safe caching layer for repeated transcribe() calls."""
+    def __init__(self, max_size: int = 256):
+        self._cache: Dict[str, Any] = {}
+        self._lock = threading.Lock()
+        self.max_size = max_size
+
+    def get(self, key: str) -> Optional[Any]:
+        with self._lock:
+            return self._cache.get(key)
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if len(self._cache) >= self.max_size:
+                first_key = next(iter(self._cache))
+                del self._cache[first_key]
+            self._cache[key] = value
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+def merge_overlapping_text(previous_text: str, current_text: str) -> str:
+    """Stability heuristic to resolve overlapping text windows."""
+    if not previous_text:
+        return current_text
+    if current_text in previous_text:
+        return previous_text
+
+    max_overlap = 0
+    min_len = min(len(previous_text), len(current_text))
+    
+    for i in range(1, min_len + 1):
+        if previous_text.endswith(current_text[:i]):
+            max_overlap = i
+
+    return previous_text + current_text[max_overlap:]
+    _transcribe_cache = TranscribeCache()
+    
+    
 
 
 def _copy_segment_extra_data(segment, language: Optional[str] = None) -> dict:
@@ -346,6 +388,11 @@ class TranscriptionModel(ABC):
         # Validate sources eagerly (before returning any generator) so misuse
         # errors propagate from the call itself.
         kind, items, is_batch = self._normalize_sources(path, url, blob)
+                cache_key = f"{path}_{url}_{blob}"
+        cached_result = _transcribe_cache.get(cache_key)
+        if cached_result:
+            return cached_result
+            
 
         # Validate streaming with diarization eagerly. This is a misuse error,
         # not a per-item data error, so it must surface immediately.
@@ -353,17 +400,19 @@ class TranscriptionModel(ABC):
             raise ValueError("Streaming (stream=True) is not compatible with diarization (diarize=True). Diarization requires processing all segments before speaker assignment.")
 
         if not is_batch:
-            return self._transcribe_one(
-                **{kind: items[0]},
-                language=language,
-                stream=stream,
-                diarize=diarize,
-                diarization_args=diarization_args,
-                output_options=output_options,
-                verbose=verbose,
-                on_progress=on_progress,
-                **kwargs,
-            )
+                    res = self._transcribe_one(
+            **(kind: items[0]),
+            language=language,
+            stream=stream,
+            diarize=diarize,
+            diarization_args=diarization_args,
+            output_options=output_options,
+            verbose=verbose,
+            on_progress=on_progress,
+            **kwargs,
+        )
+        _transcribe_cache.set(cache_key, res)
+        return res
 
         return self._transcribe_batch(
             kind=kind,
