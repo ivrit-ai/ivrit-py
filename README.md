@@ -60,6 +60,53 @@ for segment in model.transcribe(path="audio.mp3", stream=True):
         print(f"  {word['start']:.2f}s - {word['end']:.2f}s: '{word['word']}'")
 ```
 
+#### Batch Transcription
+
+Faster-whisper supports batching, which is the fastest way to transcribe many
+files or long recordings. Batching is opt-in: without extra arguments,
+`transcribe()` behaves exactly as before.
+
+```python
+import ivrit
+
+# Load the model with workers so concurrent calls can actually run in parallel.
+model = ivrit.load_model(
+    engine="faster-whisper",
+    model="ivrit-ai/whisper-large-v3-turbo-ct2",
+    num_workers=4,
+)
+
+# Option 1: decode several chunks of one file per forward pass.
+result = model.transcribe(path="long-audio.mp3", batch_size=16)
+
+# Option 2: transcribe many files concurrently (results keep input order).
+results = model.transcribe(path=["a.mp3", "b.mp3", "c.mp3"], batch_workers=4)
+
+# Both knobs can be combined.
+results = model.transcribe(
+    path=["a.mp3", "b.mp3"],
+    batch_size=16,
+    batch_workers=2,
+)
+```
+
+- **`batch_size`** (default `1`): number of audio chunks decoded in a single
+  forward pass. Values greater than 1 use faster-whisper's
+  `BatchedInferencePipeline`. It trades latency for throughput and is the main
+  win for long files.
+- **`batch_workers`** (default `1`): number of files decoded concurrently in
+  batch mode. Load the model with `num_workers` >= `batch_workers`; otherwise
+  CTranslate2 serialises the calls.
+
+Batch throughput depends on the model size and hardware. On GPU, batching is
+typically several times faster than sequential decoding; on CPU the gain is
+smaller. The batched pipeline finds chunk boundaries with VAD by default, so
+segmentation can differ slightly from the plain path; pass
+`vad_filter=False` together with `clip_timestamps` to pin the boundaries
+yourself. Use `benchmarks/batch_transcription.py` to measure your setup,
+including an accuracy parity check (`--parity`) that runs identical windows
+through both paths.
+
 #### Async Transcription (RunPod Only)
 
 For RunPod models, you can use async transcription for better performance:
@@ -115,18 +162,18 @@ Transcribe audio using the loaded model.
 
 #### Parameters
 
-- **path** (`str`, optional): Path to the audio file to transcribe
-- **url** (`str`, optional): URL to download and transcribe
-- **blob** (`str`, optional): Base64 encoded blob data to transcribe
+- **path** (`str` or `list[str]`, optional): Path to the audio file to transcribe. A list selects batch mode, returning one result per input.
+- **url** (`str` or `list[str]`, optional): URL to download and transcribe
+- **blob** (`str` or `list[str]`, optional): Base64 encoded blob data to transcribe
 - **language** (`str`, optional): Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
 - **stream** (`bool`, optional): Whether to return results as a generator (True) or full result (False) - only for `transcribe()`
 - **diarize** (`bool`, optional): Whether to enable speaker diarization
 - **verbose** (`bool`, optional): Whether to enable verbose output
-- **\*\*kwargs**: Additional keyword arguments for the transcription model
+- **\*\*kwargs**: Additional keyword arguments for the transcription model. For faster-whisper this includes `batch_size` (chunks per forward pass) and `batch_workers` (files decoded concurrently), plus any backend options such as `beam_size`, `vad_filter` or `initial_prompt`.
 
 #### Returns
 
-- `transcribe()`: If `stream=True`: Generator yielding transcription segments, If `stream=False`: Complete transcription result as dictionary
+- `transcribe()`: If `stream=True`: Generator yielding transcription segments, If `stream=False`: Complete transcription result as dictionary. In batch mode (list input) the result is a list of per-file results in input order; failed items contain an `"error"` key.
 - `transcribe_async()`: AsyncGenerator yielding transcription segments
 
 #### Raises
