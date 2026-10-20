@@ -12,6 +12,7 @@ import time
 import io
 import wave
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncGenerator, Generator, Optional, Union, List, Dict
 from uuid import uuid4
 
@@ -292,7 +293,8 @@ class TranscriptionModel(ABC):
         Each of path/url/blob accepts either a single string (single-file mode)
         or a list of strings (batch mode). A list - even a one-element list -
         selects batch mode and drives the return type. Batch items are processed
-        strictly sequentially with per-item error isolation.
+        sequentially by default, with per-item error isolation; pass
+        ``batch_workers`` to transcribe several files concurrently.
 
         Args:
             path: Path(s) to the audio file to transcribe; string or list of strings
@@ -327,6 +329,15 @@ class TranscriptionModel(ABC):
                 Exceptions raised by the callback are caught and logged at
                 warning level.
             **kwargs: Additional keyword arguments for the transcription model.
+                For the faster-whisper engine, all kwargs are forwarded to the
+                backend, and two batching knobs are supported:
+                  - ``batch_size`` (int): number of chunks decoded in one forward
+                    pass per file (default: 1, plain decoding). Values greater
+                    than 1 use faster-whisper's ``BatchedInferencePipeline``.
+                  - ``batch_workers`` (int): number of files decoded concurrently
+                    in batch mode (default: 1, sequential). The model should be
+                    loaded with ``num_workers`` >= this value, and the machine
+                    needs spare CPU cores or GPU headroom.
         Returns:
             Single-file mode (bare string source):
                 If stream=True: Generator yielding transcription segments
@@ -947,7 +958,20 @@ class WhisperSession(TranscriptionSession):
 
 
 class FasterWhisperModel(TranscriptionModel):
-    """Faster Whisper transcription model"""
+    """Faster Whisper transcription model.
+
+    Batching has two independent knobs, both passed to ``transcribe()``:
+
+    * ``batch_size=N`` decodes N chunks of the same file in one forward pass
+      (faster-whisper's ``BatchedInferencePipeline``). This is the main
+      throughput lever for long files.
+    * ``batch_workers=M`` decodes M files concurrently in batch mode. Load the
+      model with ``num_workers=M`` so CTranslate2 can actually run the calls in
+      parallel.
+
+    Constructor kwargs (``compute_type``, ``cpu_threads``, ``num_workers``,
+    ...) are forwarded to ``faster_whisper.WhisperModel``.
+    """
     
     def __init__(self, model: str, device: str = None, local_files_only: bool = False, **kwargs):
         super().__init__(engine="faster-whisper", model=model)
@@ -1003,6 +1027,64 @@ class FasterWhisperModel(TranscriptionModel):
         logger.info(f'Loading faster-whisper model: {self.model_path} on {device} with index: {device_index or 0}')
         return faster_whisper.WhisperModel(self.model_path, **args)
     
+    def _get_batched_pipeline(self) -> Any:
+        """
+        Build a faster-whisper ``BatchedInferencePipeline`` around the loaded model.
+
+        A fresh pipeline is returned on every call because the pipeline keeps
+        per-run state (``last_speech_timestamp``); sharing one instance across
+        worker threads would make concurrent batch transcription unsafe. The
+        wrapper itself is cheap - it only stores a reference to the model.
+
+        Returns:
+            A ``faster_whisper.BatchedInferencePipeline`` bound to this model.
+        """
+        import faster_whisper
+
+        return faster_whisper.BatchedInferencePipeline(model=self.model_object)
+
+    def _resolve_transcriber(self, transcribe_kwargs: Dict[str, Any]) -> Any:
+        """
+        Choose the faster-whisper entry point for one transcription call.
+
+        ``batch_size`` greater than 1 selects ``BatchedInferencePipeline``,
+        which decodes several audio chunks in a single forward pass. Any other
+        value (including unset) keeps the plain ``WhisperModel`` path, so the
+        default behaviour is unchanged.
+
+        The batched pipeline has different defaults than ``WhisperModel``:
+        ``without_timestamps`` defaults to True there, which would silently
+        drop the segment timestamps ivrit exposes. Unless the caller explicitly
+        overrides it, ``without_timestamps`` is set to False so batched output
+        keeps the same shape as the plain path.
+
+        Args:
+            transcribe_kwargs: Keyword arguments that will be forwarded to the
+                selected transcriber. Updated in place.
+
+        Returns:
+            The object exposing a ``transcribe(audio, **kwargs)`` method.
+        """
+        batch_size = transcribe_kwargs.get("batch_size")
+        if batch_size is None:
+            return self.model_object
+
+        try:
+            batch_size = int(batch_size)
+        except (TypeError, ValueError):
+            raise ValueError(f"'batch_size' must be an integer, got {batch_size!r}")
+
+        if batch_size <= 1:
+            # The plain engine has no batch_size parameter - drop the opt-out
+            # so it is not forwarded as an unexpected keyword argument.
+            transcribe_kwargs.pop("batch_size", None)
+            return self.model_object
+
+        transcribe_kwargs["batch_size"] = batch_size
+        # Preserve timestamped output unless the caller opted out explicitly.
+        transcribe_kwargs.setdefault("without_timestamps", False)
+        return self._get_batched_pipeline()
+
     def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
                       verbose: bool = False) -> TranscriptionSession:
         """
@@ -1064,9 +1146,19 @@ class FasterWhisperModel(TranscriptionModel):
                 logger.info("Diarization is enabled")
 
         try:
-            # Transcribe using faster-whisper directly with file path
-            # Enable word timestamps if requested
-            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
+            # Forward the documented **kwargs to the faster-whisper backend and
+            # select the batched pipeline when the caller asked for batching.
+            # Previously these arguments were accepted and then dropped, so
+            # engine options such as initial_prompt/hotwords/beam_size never
+            # reached the model.
+            transcribe_kwargs: Dict[str, Any] = {
+                "language": language,
+                "word_timestamps": output_options["word_timestamps"],
+            }
+            transcribe_kwargs.update(kwargs)
+            transcriber = self._resolve_transcriber(transcribe_kwargs)
+
+            segments, info = transcriber.transcribe(audio_path, **transcribe_kwargs)
             total_seconds = getattr(info, "duration", None)
 
             # Collect segments for diarization if needed
@@ -1141,6 +1233,91 @@ class FasterWhisperModel(TranscriptionModel):
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
+
+    def _transcribe_batch(
+        self,
+        *,
+        kind: str,
+        items: List[str],
+        language: Optional[str] = None,
+        stream: bool = False,
+        diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Optional[Dict[str, Any]] = None,
+        verbose: bool = False,
+        on_progress: Optional[ProgressCallback] = None,
+        **kwargs,
+    ) -> Union[Generator, List[dict]]:
+        """
+        Batch seam for faster-whisper with optional cross-file concurrency.
+
+        ``batch_workers`` (keyword-only, defaults to 1) controls how many input
+        files are decoded at the same time. CTranslate2 releases the GIL while
+        the model runs, so worker threads can genuinely overlap. For real
+        speed-ups the underlying model must be loaded with
+        ``num_workers`` greater than one (see ``FasterWhisperModel`` kwargs) and
+        the machine must have spare cores / GPU headroom.
+
+        The sequential default is preserved so existing callers see identical
+        ordering, memory use, and error handling. Results are always returned
+        in input order; a failed item is isolated exactly like the base class.
+
+        Streaming batches stay on the sequential base implementation: yielding
+        segments from several live decoders concurrently would break the
+        ``(index, Segment)`` ordering contract.
+        """
+        batch_workers = kwargs.pop("batch_workers", 1)
+        try:
+            batch_workers = int(batch_workers)
+        except (TypeError, ValueError):
+            raise ValueError(f"'batch_workers' must be an integer, got {batch_workers!r}")
+
+        total = len(items)
+        if stream or batch_workers <= 1 or total <= 1:
+            return super()._transcribe_batch(
+                kind=kind,
+                items=items,
+                language=language,
+                stream=stream,
+                diarize=diarize,
+                diarization_args=diarization_args,
+                output_options=output_options,
+                verbose=verbose,
+                on_progress=on_progress,
+                **kwargs,
+            )
+
+        workers = min(batch_workers, total)
+        if verbose:
+            logger.info(f"Transcribing batch of {total} file(s) with {workers} worker(s)")
+
+        def transcribe_one(index: int, item: str) -> dict:
+            try:
+                return self._transcribe_one(
+                    **{kind: item},
+                    language=language,
+                    stream=False,
+                    diarize=diarize,
+                    diarization_args=diarization_args,
+                    output_options=output_options,
+                    verbose=verbose,
+                    on_progress=self._wrap_progress(on_progress, index, total),
+                    **kwargs,
+                )
+            except Exception as exc:
+                return {"error": str(exc), "source": kind, "input": item}
+
+        results: List[Optional[dict]] = [None] * total
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(transcribe_one, index, item): index
+                for index, item in enumerate(items)
+            }
+            for future in futures:
+                index = futures[future]
+                results[index] = future.result()
+
+        return results
 
 
 class StableWhisperModel(TranscriptionModel):

@@ -154,6 +154,36 @@ layers. Engine-specific data that doesn't fit the schema lives in
 - **`get_device_and_index`** parses device strings like `"cuda:1"` into a
   `(device, index)` pair for the underlying libraries.
 
+### Batch Throughput (faster-whisper)
+
+Two opt-in knobs sit on top of the shared batch seam, and both flow through the
+existing `**kwargs` channel so the default sequential behaviour is unchanged:
+
+- **`batch_size > 1`** (single file): `FasterWhisperModel.transcribe_core` calls
+  `_resolve_transcriber`, which wraps the loaded `WhisperModel` in a fresh
+  `faster_whisper.BatchedInferencePipeline` per call. A fresh wrapper is used
+  because the pipeline keeps per-run state (`last_speech_timestamp`) and must
+  not be shared across threads. The wrapper forces `without_timestamps=False`
+  unless the caller overrides it, since the batched pipeline defaults to
+  dropping timestamps. `batch_size <= 1` removes the kwarg and uses the plain
+  engine, so engine calls are byte-for-byte identical to the pre-batching
+  behaviour.
+- **`batch_workers > 1`** (list of files): `FasterWhisperModel._transcribe_batch`
+  overrides the sequential base seam with a `ThreadPoolExecutor`. Results are
+  written by input index, so ordering and error isolation match the base class.
+  Streaming batches fall back to the sequential seam to preserve the
+  `(index, Segment)` ordering contract. CTranslate2 releases the GIL during
+  inference, so threads overlap - but only if the model was constructed with
+  `num_workers >= batch_workers`.
+- **kwargs forwarding**: previously `transcribe_core` accepted `**kwargs` and
+  silently dropped them; they are now forwarded to the selected transcriber
+  (e.g. `beam_size`, `initial_prompt`, `clip_timestamps`).
+
+`benchmarks/batch_transcription.py` measures throughput and provides a
+fixed-window parity mode (`--parity`) that runs identical audio windows through
+both paths; with chunk boundaries pinned and temperature 0 the transcripts are
+identical, which is the accuracy check for the batched forward pass.
+
 ### Factory
 
 `load_model(*, engine, model, **kwargs) -> TranscriptionModel` is the single
@@ -264,6 +294,9 @@ of a transcribe-then-diarize run.
    single-file path (sync via `_transcribe_one`, async via
    `_transcribe_one_async`) in input order, with results attributed by their
    input index and per-item errors isolated rather than aborting the batch.
+   `FasterWhisperModel` overrides the sync seam to run items concurrently when
+   `batch_workers > 1` (same ordering and error contract); within each item it
+   can also batch chunks via `batch_size > 1`.
    `RunPodModel` overrides the seam to carry the list as a single payload whose
    `transcribe_args` source key is a list, and demuxes the worker's
    index-tagged stream back into per-item results. `RUNPOD_MAX_PAYLOAD_LEN` is
@@ -287,6 +320,10 @@ of a transcribe-then-diarize run.
 ## Tests and Examples
 
 - `tests/` contains pytest suites: `test_basic_transcription.py`,
-  `test_diarization.py`, `test_session.py`, `test_transcribe_async.py`, plus
-  fixture audio (`asimov.mp3`, `test_input_10s.mp3`).
+  `test_diarization.py`, `test_session.py`, `test_transcribe_async.py`,
+  `test_batch_transcription.py`, and `test_faster_whisper_batching.py` (fake
+  backend, no model download), plus fixture audio (`asimov.mp3`,
+  `test_input_10s.mp3`).
+- `benchmarks/batch_transcription.py` measures the batched path against the
+  plain path and doubles as an accuracy-parity check.
 - `examples/` is currently empty and reserved for runnable usage samples.
