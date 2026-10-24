@@ -60,6 +60,12 @@ for segment in model.transcribe(path="audio.mp3", stream=True):
         print(f"  {word['start']:.2f}s - {word['end']:.2f}s: '{word['word']}'")
 ```
 
+`stream=True` yields segments of a finished file; it is not live audio.
+For a commit/preview word stream (repeated `transcribe()` + confidence
+gating, plus a comparison of rolling-window and online-decoder options),
+see `docs/streaming-word-level-analysis.md` and
+`ivrit.streaming.RepeatTranscribeStreamer`.
+
 #### Async Transcription (RunPod Only)
 
 For RunPod models, you can use async transcription for better performance:
