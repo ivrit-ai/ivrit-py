@@ -10,6 +10,7 @@ diarization backends behind a single, uniform API. The public surface lives in
 ```
 ivrit/
 ├── __init__.py        # Public API re-exports
+├── _fw_perf.py        # faster-whisper performance adapter (encoder-pass reuse)
 ├── audio.py           # Transcription models, sessions, and load_model factory
 ├── diarization.py     # Speaker diarization engines and the diarize() entry point
 ├── types.py           # Shared dataclasses: Word, Segment
@@ -122,6 +123,15 @@ layers. Engine-specific data that doesn't fit the schema lives in
 | `WhisperCppModel`    | `whisper-cpp`    | `pywhispercpp.model.Model`           | No  |
 | `RunPodModel`        | `runpod`         | RunPod-hosted endpoint over HTTP     | No  |
 
+- **`FasterWhisperModel`** passes the source to `ivrit._fw_perf.transcribe`,
+  which removes a duplicate encoder pass that faster-whisper runs when the
+  language is auto-detected (the probe pass and the first decoding pass encode
+  the same window). The adapter decodes the source once, keeps transcripts
+  identical on the tested corpus, falls back to the plain call whenever the first
+  window would differ (VAD, `clip_timestamps`, `chunk_length`, `multilingual`,
+  multi-segment language detection), and never mutates the caller's model — it
+  shadows `encode` / `feature_extractor` on a shallow copy. The measurements
+  behind this are in `PERFORMANCE.md`.
 - **`WhisperSession`** is the shared session implementation reused by both
   faster-whisper and stable-whisper. It buffers PCM frames and emits segments
   with confidence-based filtering, deferring final segments until `flush()`.

@@ -18,7 +18,7 @@ from uuid import uuid4
 import aiohttp
 import requests
 
-from . import utils
+from . import _fw_perf, utils
 from .types import Segment, Word
 from .utils import ProgressCallback, emit_progress, invoke_progress
 
@@ -1065,9 +1065,15 @@ class FasterWhisperModel(TranscriptionModel):
                 logger.info("Diarization is enabled")
 
         try:
-            # Transcribe using faster-whisper directly with file path
-            # Enable word timestamps if requested
-            segments, info = self.model_object.transcribe(audio_path, language=language, word_timestamps=output_options['word_timestamps'])
+            # _fw_perf reuses the encoder pass that faster-whisper spends on
+            # language detection before decoding the same window (see
+            # PERFORMANCE.md).  It accepts the same inputs as transcribe().
+            segments, info = _fw_perf.transcribe(
+                self.model_object,
+                audio_path,
+                language=language,
+                word_timestamps=output_options['word_timestamps'],
+            )
             total_seconds = getattr(info, "duration", None)
 
             # Collect segments for diarization if needed

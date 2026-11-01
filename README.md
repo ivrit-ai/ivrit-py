@@ -213,6 +213,19 @@ Stable and reliable transcription using Stable-TS models.
 
 **Status**: Not yet implemented
 
+## Performance
+
+On a GPU, faster-whisper spends most of its CPU time inside CTranslate2's
+decoding loop - not in audio decoding (that is under 4% of wall time). ivrit
+removes one duplicate encoder pass that faster-whisper runs whenever `language`
+is auto-detected, which makes clips up to a minute 12-48% faster and incremental
+sessions about 32% faster, with identical transcripts on the tested corpus.
+Long-form exact gains are one encoder pass per call (~1-2% on a 10 min file);
+faster-whisper's batched pipeline is the remaining throughput lever (see #42).
+
+See [PERFORMANCE.md](PERFORMANCE.md) for the measurements, methodology,
+ruled-out hypotheses and the benchmark script.
+
 ## Development
 
 ### Installation for Development

@@ -57,7 +57,9 @@ packages = ["ivrit"]
 include = [
     "/ivrit",
     "/tests",
+    "/benchmarks",
     "/README.md",
+    "/PERFORMANCE.md",
     "/THIRD_PARTY_NOTICES.md",
 ]
 
