@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 
 from ivrit import load_model 
+from ivrit.audio import WhisperSession
 from ivrit.types import Segment, Word
 
 
@@ -104,3 +105,27 @@ class TestSessionTranscription:
     def test_stable_whisper_session(self, audio_file_path):
         """Test stable-whisper session functionality"""
         self.run_session_test("stable-whisper", "ivrit-ai/whisper-large-v3-turbo-ct2", audio_file_path)
+
+
+def test_session_passes_required_transcribe_options():
+    """Regression: sessions raised on every append (missing output_options)."""
+
+    class StubModel:
+        engine = "faster-whisper"
+        model = "stub"
+
+        def __init__(self):
+            self.calls = []
+
+        def transcribe_core(self, **kwargs):
+            self.calls.append(kwargs)
+            yield Segment(text="שלום", start=0.0, end=1.0)
+
+    stub = StubModel()
+    session = WhisperSession("s1", stub, language="he", sample_rate=16000, verbose=False)
+    session.append(b"\x00\x00" * 16000)
+    session.flush()
+
+    assert stub.calls, "transcribe_core was never called"
+    assert stub.calls[0]["output_options"]["word_timestamps"]
+    assert session.get_all_segments()

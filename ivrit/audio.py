@@ -908,7 +908,8 @@ class WhisperSession(TranscriptionSession):
             all_segments = list(self.model.transcribe_core(
                 blob=wav_blob,
                 language=self.language,
-                verbose=self.verbose
+                verbose=self.verbose,
+                output_options={"word_timestamps": True, "extra_data": True}
             ))
             
             # Handle buffer trimming and segment filtering based on flush parameter
